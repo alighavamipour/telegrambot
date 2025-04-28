@@ -2,7 +2,7 @@ import os
 import logging  
 import requests  
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup  
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext  
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, CallbackContext  
 
 # تنظیمات لاگین  
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)  
@@ -88,7 +88,7 @@ async def main():
     # افزودن هندلرها  
     application.add_handler(CommandHandler("start", start))  
     application.add_handler(CommandHandler("buy", buy))  
-    application.add_handler(MessageHandler(filters.UpdateType.callback_query, button))  
+    application.add_handler(CallbackQueryHandler(button))  # استفاده از CallbackQueryHandler برای مدیریت callback  
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_payment_confirmation))  
 
     await application.initialize()  
