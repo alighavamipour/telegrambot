@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 # توکن تلگرام و آدرس API TON از متغیرهای محیطی  
 TELEGRAM_TOKEN = os.environ['TELEGRAM_TOKEN']  
 TON_API_URL = os.environ['TON_API_URL']  
+TON_API_KEY = os.environ['TON_API_KEY']  # کلید API اضافه شد  
 
 # تعریف پک‌های شماره  
 packs = {  
@@ -45,10 +46,20 @@ def button(update: Update, context: CallbackContext):
 
     pack_name = query.data  
     pack_details = packs[pack_name]  
-    
+
     user_id = query.from_user.id  
-    payment_url = f"{TON_API_URL}/create_payment?user_id={user_id}&amount={pack_details['price']}"  
-    response = requests.get(payment_url)  
+    payment_url = f"{TON_API_URL}/createPayment"  # تغییر به endpoint مناسب  
+    headers = {  
+        "x-api-key": TON_API_KEY,  
+        "Content-Type": "application/json"  
+    }  
+    payload = {  
+        "user_id": user_id,  
+        "amount": pack_details['price']  
+    }  
+
+    # ارسال درخواست به API TonCenter  
+    response = requests.post(payment_url, headers=headers, json=payload)  
 
     if response.status_code == 200:  
         payment_data = response.json()  
@@ -59,19 +70,22 @@ def button(update: Update, context: CallbackContext):
 
 def handle_payment_confirmation(update: Update, context: CallbackContext):  
     user_id = update.message.from_user.id  
-    # اینجا باید کدی برای تایید پرداخت کاربر نوشته شود  
-    if confirm_payment(user_id):  # تأیید پرداخت  
-        # ارسال شماره‌ها بعد از تأیید پرداخت  
-        query.edit_message_text(text='پرداخت شما تأیید شد. لیست شماره‌ها:')  
-        # اینجا باید لیست شماره‌های مربوط به پک خریداری شده ارسال شود  
-        # می‌توانید شماره‌ها را از packs با توجه به user_id بخوانید  
+    # تأیید پرداخت کاربر  
+    if confirm_payment(user_id):  # فرض بر این است که تابع تأیید پرداخت داریم  
+        # اینجا شماره‌های مربوط به پک خریداری شده را ارسال کنید  
+        pack_name = "basic"  # نام پکی که خریداری شده را مشخص کنید  
+        numbers = packs[pack_name]['numbers']  
+        query.edit_message_text(text=f'پرداخت شما تأیید شد. لیست شماره‌ها:\n{", ".join(numbers)}')  
     else:  
         update.message.reply_text('پرداخت شما تأیید نشد.')  
 
 def confirm_payment(user_id: int):  
     # اینجا باید کدی برای تأیید پرداخت نوشته شود  
     # مانند بررسی وضعیت پرداخت از API درگاه TON  
-    return True  
+    # به عنوان مثال:  
+    # response = requests.get(f"{TON_API_URL}/checkPayment?user_id={user_id}")  
+    # return response.json().get("status") == "confirmed"  
+    return True  # برای تست  
 
 def main():  
     updater = Updater(TELEGRAM_TOKEN)  
@@ -80,8 +94,8 @@ def main():
     # افزودن هندلرهای مختلف  
     dp.add_handler(CommandHandler("start", start))  
     dp.add_handler(CommandHandler("buy", buy))  
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_payment_confirmation))  
     dp.add_handler(MessageHandler(Filters.update.callback_query, button))  
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_payment_confirmation))  
 
     updater.start_polling()  
     updater.idle()  
