@@ -2,7 +2,7 @@ import os
 import logging  
 import requests  
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup  
-from telegram.ext import Updater, CommandHandler, MessageHandler, filters, CallbackContext  # تغییر Filters به filters  
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext  
 
 # تنظیمات لاگین  
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)  
@@ -82,18 +82,19 @@ def confirm_payment(user_id: int):
     # منطق تأیید پرداخت  
     return True  
 
-def main():  
-    updater = Updater(TELEGRAM_TOKEN)  
-    dp = updater.dispatcher  
+async def main():  
+    application = Application.builder().token(TELEGRAM_TOKEN).build()  # استفاده از Application به جای Updater  
 
     # افزودن هندلرها  
-    dp.add_handler(CommandHandler("start", start))  
-    dp.add_handler(CommandHandler("buy", buy))  
-    dp.add_handler(MessageHandler(filters.UpdateType.callback_query, button))  # اصلاح شده  
-    dp.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_payment_confirmation))  # اصلاح شده  
+    application.add_handler(CommandHandler("start", start))  
+    application.add_handler(CommandHandler("buy", buy))  
+    application.add_handler(MessageHandler(filters.UpdateType.callback_query, button))  
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_payment_confirmation))  
 
-    updater.start_polling()  
-    updater.idle()  
+    await application.initialize()  
+    await application.start_polling()  
+    await application.idle()  
 
 if __name__ == '__main__':  
-    main()  
+    import asyncio  
+    asyncio.run(main())  # اجرای main به صورت asyncio  
