@@ -92,7 +92,7 @@ async def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_payment_confirmation))  
 
     await application.initialize()  
-    await application.start_polling()  
+    await application.start_polling()  # استفاده از run_polling به جای start_polling  
     await application.idle()  
 
 if __name__ == '__main__':  
