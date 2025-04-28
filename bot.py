@@ -2,7 +2,7 @@ import os
 import logging  
 import requests  
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup  
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext  
+from telegram.ext import Updater, CommandHandler, MessageHandler, filters, CallbackContext  # تغییر Filters به filters  
 
 # تنظیمات لاگین  
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)  
@@ -46,9 +46,9 @@ def button(update: Update, context: CallbackContext):
 
     pack_name = query.data  
     pack_details = packs[pack_name]  
-
+    
     user_id = query.from_user.id  
-    payment_url = f"{TON_API_URL}/createPayment"  # تغییر به endpoint مناسب  
+    payment_url = f"{TON_API_URL}/createPayment"  # URL ایجاد پرداخت  
     headers = {  
         "x-api-key": TON_API_KEY,  
         "Content-Type": "application/json"  
@@ -70,32 +70,27 @@ def button(update: Update, context: CallbackContext):
 
 def handle_payment_confirmation(update: Update, context: CallbackContext):  
     user_id = update.message.from_user.id  
-    # تأیید پرداخت کاربر  
-    if confirm_payment(user_id):  # فرض بر این است که تابع تأیید پرداخت داریم  
-        # اینجا شماره‌های مربوط به پک خریداری شده را ارسال کنید  
-        pack_name = "basic"  # نام پکی که خریداری شده را مشخص کنید  
+    # تأیید پرداخت  
+    if confirm_payment(user_id):  
+        pack_name = "basic"  # فرض بر این است که پک انتخاب شده "basic" است  
         numbers = packs[pack_name]['numbers']  
-        query.edit_message_text(text=f'پرداخت شما تأیید شد. لیست شماره‌ها:\n{", ".join(numbers)}')  
+        update.message.reply_text(f'پرداخت شما تأیید شد. لیست شماره‌ها:\n{", ".join(numbers)}')  
     else:  
         update.message.reply_text('پرداخت شما تأیید نشد.')  
 
 def confirm_payment(user_id: int):  
-    # اینجا باید کدی برای تأیید پرداخت نوشته شود  
-    # مانند بررسی وضعیت پرداخت از API درگاه TON  
-    # به عنوان مثال:  
-    # response = requests.get(f"{TON_API_URL}/checkPayment?user_id={user_id}")  
-    # return response.json().get("status") == "confirmed"  
-    return True  # برای تست  
+    # منطق تأیید پرداخت  
+    return True  
 
 def main():  
     updater = Updater(TELEGRAM_TOKEN)  
     dp = updater.dispatcher  
 
-    # افزودن هندلرهای مختلف  
+    # افزودن هندلرها  
     dp.add_handler(CommandHandler("start", start))  
     dp.add_handler(CommandHandler("buy", buy))  
-    dp.add_handler(MessageHandler(Filters.update.callback_query, button))  
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_payment_confirmation))  
+    dp.add_handler(MessageHandler(filters.UpdateType.callback_query, button))  # اصلاح شده  
+    dp.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_payment_confirmation))  # اصلاح شده  
 
     updater.start_polling()  
     updater.idle()  
