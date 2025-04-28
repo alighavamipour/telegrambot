@@ -1,1 +1,2 @@
-aiogram
+python-telegram-bot  
+pytube
