@@ -9,7 +9,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)  
 
 # توکن ربات تلگرام از محیط  
-API_TOKEN = os.getenv("7888950891:AAG_hzMdSJGYH83D1qr7kVHd6NPk7OstVGY")  
+API_TOKEN = os.getenv("TELEGRAM_API_TOKEN")  
 
 # الگوی regex برای شناسایی لینک‌های یوتیوب  
 YOUTUBE_REGEX = r'(https?://)?(www\.)?(youtube\.com/watch\?v=|youtu\.be/)([a-zA-Z0-9_-]{11})'  
