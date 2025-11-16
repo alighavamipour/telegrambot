@@ -1,2 +1,2 @@
-python-telegram-bot  
-requests
+pyTelegramBotAPI==4.12.0
+yt-dlp==2025.10.01
