@@ -1,183 +1,116 @@
-import os
-import logging
-from functools import wraps
 import telebot
 from telebot import types
-from datetime import datetime
+import os
+import logging
 
-from config import BOT_TOKEN, CHANNEL_ID, OWNER_ID, REQUIRED_CHANNELS, DB_PATH
-import database
-from utils_soundcloud import download_soundcloud
-from yt_dlp import YoutubeDL
+# ====== تنظیمات ======
+API_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+CHANNEL_USERNAME = "@YourChannel"  # آدرس کانال
+ADMIN_ID = int(os.environ.get("ADMIN_ID", 123456789))
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+bot = telebot.TeleBot(API_TOKEN)
+telebot.logger.setLevel(logging.INFO)
 
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None)
+# ====== رفع مشکل Conflict 409 ======
+bot.remove_webhook()
+logging.info("Webhook removed, polling started...")
 
-# ایجاد پوشه data و دیتابیس اگر وجود نداشته باشد
-if not os.path.exists('data'):
-    os.makedirs('data')
-if not os.path.exists(DB_PATH):
-    database.init_db()
+# ====== دیتابیس ساده ======
+users_pending_posts = {}  # پیام‌های منتظر تایید {user_id: message_text}
 
-# ---------------------------
-# Decorator عضویت اجباری
-# ---------------------------
-def member_required(func):
-    @wraps(func)
-    def wrapper(message, *args, **kwargs):
-        user_id = message.from_user.id
+# ====== بررسی عضویت ======
+def is_member(user_id):
+    try:
+        member = bot.get_chat_member(CHANNEL_USERNAME, user_id)
+        return member.status in ['member', 'creator', 'administrator']
+    except Exception:
+        return False
 
-        # پیام فوروارد شده
-        if message.forward_from is not None:
-            bot.reply_to(message, "⚠ لطفاً فایل را مستقیم برای ربات ارسال کنید، فوروارد نکنید.")
-            return
-
-        # بررسی عضویت در کانال
-        for channel in REQUIRED_CHANNELS:
-            try:
-                member = bot.get_chat_member(channel, user_id)
-                if member.status in ['left', 'kicked']:
-                    bot.reply_to(message, f"⚠ برای استفاده از ربات باید عضو کانال {channel} باشید.")
-                    return
-            except Exception as e:
-                logger.warning(f"Cannot check member {user_id} in {channel}: {e}")
-                bot.reply_to(message, "⚠ مشکلی در بررسی عضویت شما پیش آمد. لطفاً دوباره امتحان کنید.")
-                return
-
-        # کاربر عضو کانال → اجرای تابع اصلی
-        return func(message, *args, **kwargs)
-    return wrapper
-
-# ---------------------------
-# منوی اصلی
-# ---------------------------
+# ====== منو اصلی ======
 def main_menu():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row("🎵 آخرین آهنگ‌ها", "🎬 آخرین فیلم‌ها")
-    markup.row("✍ ارسال پیام/توئیت", "📥 دانلود SoundCloud")
+    markup.row("📥 SoundCloud Downloader", "✉️ ارسال پیام")
     markup.row("📢 درخواست تبلیغات")
     return markup
 
-# ---------------------------
-# شروع / منو
-# ---------------------------
-@bot.message_handler(commands=['start', 'menu'])
-def send_welcome(message):
-    bot.send_message(
-        message.chat.id,
-        "سلام! من ربات مدیریت کانال تو هستم.\nلطفاً یکی از گزینه‌های منو را انتخاب کنید.",
-        reply_markup=main_menu()
-    )
+# ====== شروع ربات ======
+@bot.message_handler(commands=['start'])
+def start(message):
+    bot.send_message(message.chat.id, "سلام! به ربات خوش آمدید.", reply_markup=main_menu())
 
-# ---------------------------
-# مدیریت آهنگ و فیلم
-# ---------------------------
-@bot.message_handler(content_types=['audio', 'video', 'document'])
-@member_required
-def handle_media(message):
-    user = message.from_user
-    content_type = message.content_type
+# ====== مدیریت ارسال‌ها ======
+@bot.message_handler(content_types=['text', 'audio', 'video', 'document'])
+def handle_message(message):
+    user_id = message.from_user.id
 
-    # فایل دانلود می‌شود
-    file_id = None
-    if content_type == 'audio':
-        file_id = message.audio.file_id
-    elif content_type == 'video':
-        file_id = message.video.file_id
-    elif content_type == 'document':
-        file_id = message.document.file_id
+    if not is_member(user_id):
+        bot.send_message(user_id, f"برای استفاده از ربات باید عضو کانال {CHANNEL_USERNAME} باشید.")
+        return
 
-    try:
-        file_info = bot.get_file(file_id)
-        downloaded_file = bot.download_file(file_info.file_path)
-        filename = os.path.join('data', file_info.file_path.split('/')[-1])
-        with open(filename, 'wb') as f:
-            f.write(downloaded_file)
+    if message.content_type == 'text':
+        text = message.text
+        if text == "🎵 آخرین آهنگ‌ها":
+            bot.send_message(user_id, f"آخرین آهنگ‌ها در کانال {CHANNEL_USERNAME} 🎵")
+        elif text == "🎬 آخرین فیلم‌ها":
+            bot.send_message(user_id, f"آخرین فیلم‌ها در کانال {CHANNEL_USERNAME} 🎬")
+        elif text == "📥 SoundCloud Downloader":
+            bot.send_message(user_id, "لینک SoundCloud خود را ارسال کنید تا دانلود شود.")
+        elif text == "✉️ ارسال پیام":
+            bot.send_message(user_id, "پیام خود را ارسال کنید تا پس از تایید مدیر منتشر شود.")
+        elif text == "📢 درخواست تبلیغات":
+            bot.send_message(user_id, "لطفاً متن درخواست تبلیغات خود را ارسال کنید.")
+        return
 
-        # تعیین کپشن و آیکون
-        if content_type == 'audio':
-            caption = f"🎵 آهنگ از کانال ما: t.me/{CHANNEL_ID}"
+    # فایل‌ها (audio/video/document)
+    if message.content_type in ['audio', 'video', 'document']:
+        file_id = None
+        caption = ""
+        if message.content_type == 'audio':
+            file_id = message.audio.file_id
+        elif message.content_type == 'video':
+            file_id = message.video.file_id
         else:
-            caption = f"🎬 فیلم از کانال ما: t.me/{CHANNEL_ID}"
+            file_id = message.document.file_id
 
-        # ذخیره اطلاعات در دیتابیس
-        database.save_media(user.username or user.first_name, filename, content_type, caption, datetime.now())
+        # مدیریت ارسال توسط مدیر یا کاربر
+        if user_id == ADMIN_ID:
+            caption = f"دانلود شده از {CHANNEL_USERNAME}"
+            try:
+                if message.content_type == 'audio':
+                    bot.send_audio(CHANNEL_USERNAME, file_id, caption=caption)
+                elif message.content_type == 'video':
+                    bot.send_video(CHANNEL_USERNAME, file_id, caption=caption)
+                else:
+                    bot.send_document(CHANNEL_USERNAME, file_id, caption=caption)
+                bot.send_message(user_id, "با موفقیت ارسال شد ✅")
+            except Exception as e:
+                bot.send_message(user_id, f"خطا در ارسال: {e}")
+        else:
+            caption = f"ارسال شده توسط {message.from_user.first_name}"
+            # ذخیره پیام برای تایید
+            users_pending_posts[user_id] = (file_id, message.content_type, caption)
+            bot.send_message(user_id, "پیام شما برای تایید مدیر ثبت شد ✅")
+            bot.send_message(ADMIN_ID, f"پیام جدید برای تایید از {message.from_user.first_name} ({user_id})")
 
-        # پست در کانال (برای کاربران عادی فقط اسمشون)
-        bot.send_message(
-            CHANNEL_ID,
-            f"{caption}\nارسال شده توسط: {user.first_name}"
-        )
+# ====== تایید پیام توسط مدیر ======
+@bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID)
+def admin_approve(message):
+    if message.text.startswith("تایید "):
+        try:
+            user_id = int(message.text.split()[1])
+            if user_id in users_pending_posts:
+                file_id, content_type, caption = users_pending_posts[user_id]
+                if content_type == 'audio':
+                    bot.send_audio(CHANNEL_USERNAME, file_id, caption=caption)
+                elif content_type == 'video':
+                    bot.send_video(CHANNEL_USERNAME, file_id, caption=caption)
+                else:
+                    bot.send_document(CHANNEL_USERNAME, file_id, caption=caption)
+                bot.send_message(user_id, "پیام شما منتشر شد ✅")
+                del users_pending_posts[user_id]
+        except Exception as e:
+            bot.send_message(ADMIN_ID, f"خطا در تایید پیام: {e}")
 
-        bot.reply_to(message, f"✅ فایل دریافت و در کانال منتشر شد: {filename}")
-
-    except Exception as e:
-        logger.error(f"Error handling media: {e}")
-        bot.reply_to(message, "⚠ مشکلی پیش آمد، دوباره امتحان کنید.")
-
-# ---------------------------
-# SoundCloud
-# ---------------------------
-@bot.message_handler(func=lambda msg: 'soundcloud.com' in msg.text.lower())
-@member_required
-def handle_soundcloud(message):
-    try:
-        bot.reply_to(message, "⏳ دانلود SoundCloud شروع شد...")
-        file_path = download_soundcloud(message.text)
-        bot.reply_to(message, f"✅ دانلود انجام شد: {file_path}")
-    except Exception as e:
-        logger.error(f"Error downloading SoundCloud: {e}")
-        bot.reply_to(message, "⚠ مشکلی در دانلود SoundCloud پیش آمد.")
-
-# ---------------------------
-# ارسال پیام/توئیت کاربران با تایید
-# ---------------------------
-@bot.message_handler(func=lambda msg: msg.text and msg.text.startswith("✍"))
-@member_required
-def handle_user_post(message):
-    user = message.from_user
-    database.save_pending_post(user.username or user.first_name, message.text)
-    bot.reply_to(message, "✅ پیام شما ثبت شد و پس از تایید مدیر در کانال منتشر خواهد شد.")
-
-# ---------------------------
-# پست‌های تایید نشده (برای مدیر)
-# ---------------------------
-@bot.message_handler(commands=['pending'])
-def pending_posts(message):
-    if message.from_user.id != OWNER_ID:
-        return
-    posts = database.get_pending_posts()
-    for post_id, username, text in posts:
-        markup = types.InlineKeyboardMarkup()
-        markup.add(
-            types.InlineKeyboardButton("✅ تایید", callback_data=f"approve_{post_id}"),
-            types.InlineKeyboardButton("❌ رد", callback_data=f"reject_{post_id}")
-        )
-        bot.send_message(message.chat.id, f"{username}:\n{text}", reply_markup=markup)
-
-# ---------------------------
-# Callback تایید/رد
-# ---------------------------
-@bot.callback_query_handler(func=lambda call: call.data.startswith(("approve_", "reject_")))
-def callback_approve(call):
-    action, post_id = call.data.split("_")
-    post_id = int(post_id)
-    if call.from_user.id != OWNER_ID:
-        bot.answer_callback_query(call.id, "❌ فقط مدیر می‌تواند این کار را انجام دهد.")
-        return
-    if action == "approve":
-        post = database.get_post(post_id)
-        bot.send_message(CHANNEL_ID, f"{post[2]}\nارسال شده توسط: {post[1]}")
-        database.mark_post_done(post_id)
-        bot.answer_callback_query(call.id, "✅ پست تایید شد و منتشر شد.")
-    else:
-        database.mark_post_done(post_id)
-        bot.answer_callback_query(call.id, "❌ پست رد شد.")
-
-# ---------------------------
-# شروع ربات
-# ---------------------------
-logger.info("Bot started.")
+# ====== Polling ======
 bot.infinity_polling()
