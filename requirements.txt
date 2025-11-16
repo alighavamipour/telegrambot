@@ -2,5 +2,5 @@ pyTelegramBotAPI==4.12.0
 yt-dlp
 python-dotenv==1.0.0
 requests==2.31.0
-pytube==15.0.0  # نسخه موجود
-soundcloud-downloader==0.1.1
+pytube==15.0.0
+soundcloud-downloader==0.1.4  # نسخه موجود روی PyPI
