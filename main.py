@@ -1,86 +1,64 @@
 import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from database import init_db, add_user, get_user
-from utils import check_membership, clean_caption, is_owner
+from telebot import types
+from config import BOT_TOKEN, OWNER_ID, CHANNEL_ID, ADMIN_IDS
+from database import add_user, is_vip, add_post
+from utils import check_membership, generate_caption, download_file, main_menu
 import os
-import sqlite3
-
-# --- Environment Variables ---
-BOT_TOKEN = os.environ.get('BOT_TOKEN')
-CHANNEL_ID = os.environ.get('CHANNEL_ID')
-OWNER_ID = int(os.environ.get('OWNER_ID'))
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# --- Database setup ---
-init_db()
-
-# --- Start / Help commands ---
-@bot.message_handler(commands=['start', 'help'])
+# پیام استارت و چک عضویت
+@bot.message_handler(commands=["start"])
 def start(message):
-    user_id = message.from_user.id
-    add_user(user_id, message.from_user.first_name, message.from_user.last_name)
-    
-    if not check_membership(user_id, CHANNEL_ID):
-        bot.send_message(message.chat.id,
-                         f"برای استفاده از ربات باید عضو کانال ما شوید: t.me/{CHANNEL_ID}")
+    add_user(message.from_user.id, message.from_user.first_name, message.from_user.last_name, message.from_user.username)
+    if not check_membership(bot, message.from_user.id):
+        bot.send_message(message.chat.id, f"برای استفاده از ربات ابتدا باید عضو کانال شوید: {CHANNEL_ID}")
         return
+    bot.send_message(message.chat.id, "سلام! به ربات خوش آمدید.", reply_markup=main_menu())
 
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("🎵 آخرین آهنگ‌ها", callback_data="latest_songs"))
-    markup.add(InlineKeyboardButton("🎬 آخرین فیلم‌ها", callback_data="latest_movies"))
-    bot.send_message(message.chat.id, "سلام! من ربات شما هستم.", reply_markup=markup)
-
-
-# --- Handling media ---
-@bot.message_handler(content_types=['audio', 'document', 'video'])
-def handle_media(message):
-    user_id = message.from_user.id
-    
-    if not check_membership(user_id, CHANNEL_ID):
-        bot.send_message(message.chat.id, "لطفاً ابتدا عضو کانال شوید.")
-        return
-
-    caption = f"کانال ما: t.me/{CHANNEL_ID}"
-    filename = None
-
-    if message.audio:
+# دریافت فایل
+@bot.message_handler(content_types=["audio", "video", "document"])
+def receive_file(message):
+    vip = is_vip(message.from_user.id)
+    file_info = None
+    if message.content_type == "audio":
         file_info = bot.get_file(message.audio.file_id)
-        filename = message.audio.file_name
-        downloaded_file = bot.download_file(file_info.file_path)
-    elif message.video:
+        file_name = message.audio.file_name or "audio.mp3"
+    elif message.content_type == "video":
         file_info = bot.get_file(message.video.file_id)
-        filename = message.video.file_name
-        downloaded_file = bot.download_file(file_info.file_path)
-    elif message.document:
+        file_name = message.video.file_name or "video.mp4"
+    else:
         file_info = bot.get_file(message.document.file_id)
-        filename = message.document.file_name
-        downloaded_file = bot.download_file(file_info.file_path)
-
-    # Save file locally
-    with open(filename, 'wb') as f:
+        file_name = message.document.file_name
+    
+    downloaded_file = bot.download_file(file_info.file_path)
+    save_path = os.path.join("downloads", file_name)
+    with open(save_path, "wb") as f:
         f.write(downloaded_file)
 
-    # Forward to channel (owner can send directly)
-    if is_owner(user_id, OWNER_ID):
-        bot.send_message(message.chat.id, "فایل شما برای کانال ارسال شد.")
-        bot.send_document(CHANNEL_ID, open(filename, 'rb'), caption=caption)
+    caption = generate_caption(message.from_user, vip)
+    add_post(message.from_user.id, file_name, message.content_type, caption)
+
+    if vip or message.from_user.id == OWNER_ID:
+        bot.send_message(message.chat.id, f"فایل شما با موفقیت ثبت شد و در کانال ارسال می‌شود.")
+        bot.send_document(CHANNEL_ID, open(save_path, "rb"), caption=caption)
     else:
-        # For regular users, store or send to owner for review
-        bot.send_message(OWNER_ID, f"کاربر {message.from_user.first_name} {message.from_user.last_name} ارسال کرده:")
-        bot.send_document(OWNER_ID, open(filename, 'rb'), caption=caption)
-        bot.send_message(message.chat.id, "فایل شما برای بررسی به ادمین ارسال شد.")
+        bot.send_message(message.chat.id, f"فایل شما ثبت شد. منتظر تایید ادمین بمانید.")
 
-# --- Callback for inline keyboard ---
-@bot.callback_query_handler(func=lambda call: True)
-def callback_query(call):
-    if call.data == "latest_songs":
-        bot.answer_callback_query(call.id, "لیست آخرین آهنگ‌ها آماده شد.")
-        # Logic to show latest songs
-    elif call.data == "latest_movies":
-        bot.answer_callback_query(call.id, "لیست آخرین فیلم‌ها آماده شد.")
-        # Logic to show latest movies
+# منو
+@bot.message_handler(func=lambda m: True)
+def menu(message):
+    text = message.text
+    if text == "🎵 آخرین آهنگ‌ها":
+        bot.send_message(message.chat.id, "آخرین آهنگ‌ها: ...")
+    elif text == "🎬 آخرین فیلم‌ها":
+        bot.send_message(message.chat.id, "آخرین فیلم‌ها: ...")
+    elif text == "📥 دانلود":
+        bot.send_message(message.chat.id, "برای دانلود لینک بدهید.")
+    else:
+        bot.send_message(message.chat.id, "گزینه نامعتبر!")
 
-# --- Run bot ---
-bot.remove_webhook()
-bot.infinity_polling()
+# اجرای ربات
+if __name__ == "__main__":
+    print("Bot started...")
+    bot.infinity_polling()
