@@ -1,25 +1,31 @@
-from telebot import TeleBot
+from telebot import types
+from config import CHANNEL_ID, OWNER_ID
+import os
+import requests
 
-bot = None  # Will be set in main
-
-def set_bot(t):
-    global bot
-    bot = t
-
-def check_membership(user_id, channel_id):
+def check_membership(bot, user_id):
     try:
-        member = bot.get_chat_member(chat_id=channel_id, user_id=user_id)
-        return member.status in ['member', 'administrator', 'creator']
+        member = bot.get_chat_member(CHANNEL_ID, user_id)
+        return member.status != "left"
     except:
         return False
 
-def clean_caption(caption):
-    # Remove mentions, hashtags, links
-    import re
-    caption = re.sub(r'@\w+', '', caption)
-    caption = re.sub(r'#\w+', '', caption)
-    caption = re.sub(r'http\S+', '', caption)
-    return caption.strip()
+def generate_caption(user, vip=False):
+    if vip:
+        return f"📢 پست VIP توسط {user.first_name} {user.last_name}"
+    else:
+        return f"📢 کانال ما: {CHANNEL_ID}\nارسال‌کننده: {user.first_name} {user.last_name}"
 
-def is_owner(user_id, owner_id):
-    return user_id == owner_id
+def download_file(url, filename):
+    r = requests.get(url, stream=True)
+    path = os.path.join("downloads", filename)
+    with open(path, "wb") as f:
+        for chunk in r.iter_content(1024):
+            f.write(chunk)
+    return path
+
+def main_menu():
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    keyboard.row("🎵 آخرین آهنگ‌ها", "🎬 آخرین فیلم‌ها")
+    keyboard.row("📥 دانلود")
+    return keyboard
