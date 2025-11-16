@@ -1,7 +1,12 @@
 import os
+from dotenv import load_dotenv
 
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))
-CHANNEL_LINK = os.environ.get("CHANNEL_LINK", "https://t.me/YourChannel")
-DOWNLOAD_PATH = os.environ.get("DOWNLOAD_PATH", "data/downloads")
-STATS_FILE = os.environ.get("STATS_FILE", "data/stats.json")
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+OWNER_ID = int(os.getenv("OWNER_ID"))
+CHANNEL_ID = os.getenv("CHANNEL_ID")
+ADMIN_IDS = [OWNER_ID]  # می‌تونی اضافه کنی چند ادمین
+
+# مسیر ذخیره فایل‌های دریافتی
+DOWNLOAD_PATH = "downloads"
