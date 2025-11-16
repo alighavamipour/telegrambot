@@ -1,7 +1,7 @@
-from telebot import types
-from config import CHANNEL_ID, OWNER_ID
 import os
 import requests
+from telebot import types
+from config import CHANNEL_ID, OWNER_ID
 
 def check_membership(bot, user_id):
     try:
@@ -27,5 +27,14 @@ def download_file(url, filename):
 def main_menu():
     keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
     keyboard.row("🎵 آخرین آهنگ‌ها", "🎬 آخرین فیلم‌ها")
-    keyboard.row("📥 دانلود")
+    keyboard.row("📥 دانلود", "🎶 دانلود SoundCloud")
     return keyboard
+
+def download_soundcloud(url, filename="soundcloud.mp3"):
+    # اینجا فرضی: می‌تونی API واقعی SoundCloud بذاری
+    path = os.path.join("downloads", filename)
+    r = requests.get(url, stream=True)
+    with open(path, "wb") as f:
+        for chunk in r.iter_content(1024):
+            f.write(chunk)
+    return path
