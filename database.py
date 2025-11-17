@@ -56,7 +56,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-# users
+# -------------------- USERS --------------------
 def add_or_update_user(user_id, first_name, last_name, username):
     conn = get_conn(); c = conn.cursor()
     now = datetime.utcnow().isoformat()
@@ -66,18 +66,7 @@ def add_or_update_user(user_id, first_name, last_name, username):
               (first_name, last_name, username, user_id))
     conn.commit(); conn.close()
 
-def set_vip(user_id, is_vip=1):
-    conn = get_conn(); c = conn.cursor()
-    c.execute("UPDATE users SET vip=? WHERE user_id=?", (1 if is_vip else 0, user_id))
-    conn.commit(); conn.close()
-
-def is_vip(user_id):
-    conn = get_conn(); c = conn.cursor()
-    c.execute("SELECT vip FROM users WHERE user_id=?", (user_id,))
-    row = c.fetchone(); conn.close()
-    return bool(row and row[0] == 1)
-
-# posts: store local path (saved file), optional telegram file id
+# -------------------- POSTS --------------------
 def add_post(local_path, tg_file_id, file_name, media_type, title, uploader_name, uploader_id):
     conn = get_conn(); c = conn.cursor()
     now = datetime.utcnow().isoformat()
@@ -103,7 +92,7 @@ def get_post(post_id):
     c.execute("SELECT id, local_path, tg_file_id, file_name, media_type, title, uploader_name FROM posts WHERE id=?", (post_id,))
     r = c.fetchone(); conn.close(); return r
 
-# pending texts
+# -------------------- PENDING TEXTS --------------------
 def add_pending_text(user_id, user_name, text):
     conn = get_conn(); c = conn.cursor()
     now = datetime.utcnow().isoformat()
@@ -120,7 +109,7 @@ def set_pending_status(pending_id, status):
     c.execute("UPDATE pending_texts SET status=? WHERE id=?", (status, pending_id))
     conn.commit(); conn.close()
 
-# requests
+# -------------------- REQUESTS --------------------
 def add_request(user_id, req_type, content):
     conn = get_conn(); c = conn.cursor()
     now = datetime.utcnow().isoformat()
