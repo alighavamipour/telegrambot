@@ -5,25 +5,28 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
 
+# ------------------- CLEAN CAPTION -------------------
 def clean_caption(text):
     if not text:
         return ""
-    t = re.sub(r'@\w+', '', text)                # remove mentions
-    t = re.sub(r'http\S+', '', t)                # remove links
-    t = re.sub(r'#\w+', '', t)                   # remove hashtags
+    t = re.sub(r'@\w+', '', text)
+    t = re.sub(r'http\S+', '', t)
+    t = re.sub(r'#\w+', '', t)
     return t.strip()
 
+# ------------------- USER DISPLAY NAME -------------------
 def user_display_name(user):
     fn = user.first_name or ""
     ln = user.last_name or ""
     return (fn + (" " + ln if ln else "")).strip() or "ناشناس"
 
+# ------------------- MAKE CHANNEL CAPTION -------------------
 def make_channel_caption(channel_id):
-    # clickable link (t.me) and visible identifier on new line
     if channel_id.startswith("@"):
         return f"https://t.me/{channel_id.lstrip('@')}"
     return str(channel_id)
 
+# ------------------- CHECK MEMBERSHIP -------------------
 def check_membership(bot, user_id):
     try:
         for ch in REQUIRED_CHANNELS:
@@ -35,11 +38,16 @@ def check_membership(bot, user_id):
         logger.exception("membership check failed: %s", e)
         return False
 
-# --- yt-dlp downloader (works for SoundCloud and many sources) ---
+
+# ============================================================
+#                  YT-DLP UNIVERSAL DOWNLOADER
+# ============================================================
 from yt_dlp import YoutubeDL
+
 def download_with_ytdlp(url, outdir=DOWNLOAD_PATH, filename_prefix=None):
     os.makedirs(outdir, exist_ok=True)
     outtmpl = os.path.join(outdir, (filename_prefix or '%(id)s') + '.%(ext)s')
+
     opts = {
         'format': 'bestaudio/best',
         'outtmpl': outtmpl,
@@ -48,37 +56,59 @@ def download_with_ytdlp(url, outdir=DOWNLOAD_PATH, filename_prefix=None):
         'no_warnings': True,
         'ignoreerrors': False,
     }
+
     with YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
         fname = ydl.prepare_filename(info)
         return fname, info
 
-# --- Mutagen: write ID3 tags so car players show channel id ---
-from mutagen.easyid3 import EasyID3
-from mutagen.mp3 import MP3
-def write_id3_channel_tag(mp3_path, channel_id='@voxxboxx'):
+
+# ============================================================
+#                 AUTO METADATA (FULL ID3 TAGGING)
+# ============================================================
+from mutagen.id3 import (
+    ID3, TIT2, TALB, TPE1, TPE2, COMM, TCON,
+    ID3NoHeaderError
+)
+
+CHANNEL_TAG = "@voxxboxx"
+
+def auto_metadata(mp3_path):
+    """ نوشتن خودکار تمام متادیتای لازم روی هر فایل mp3 """
     try:
         if not mp3_path.lower().endswith('.mp3'):
             return False
-        audio = MP3(mp3_path, ID3=EasyID3)
-        # set album/artist/comment fields to include channel id
+
         try:
-            audio.add_tags()
-        except Exception:
-            pass
-        audio_tags = {}
-        # preserve title/artist if exist
-        if 'title' in audio:
-            audio_tags['title'] = audio['title'][0]
-        else:
-            audio_tags['title'] = os.path.basename(mp3_path)
-        audio_tags['artist'] = audio.get('artist', [channel_id])[0]
-        # put channel id in comment
-        audio['comment'] = [f'Channel: {channel_id}']
-        # ensure artist includes channel id for visibility
-        audio['artist'] = [audio_tags['artist']]
-        audio.save()
+            tags = ID3(mp3_path)
+        except ID3NoHeaderError:
+            tags = ID3()
+
+        # ---------------- SET FULL METADATA ----------------
+        tags["TIT2"] = TIT2(encoding=3, text="Audio")
+        tags["TPE1"] = TPE1(encoding=3, text=CHANNEL_TAG)       # Artist
+        tags["TALB"] = TALB(encoding=3, text=CHANNEL_TAG)       # Album
+        tags["TPE2"] = TPE2(encoding=3, text=CHANNEL_TAG)       # Performer
+        tags["COMM"] = COMM(encoding=3, lang="eng", desc="Comment",
+                            text=f"Downloaded from {CHANNEL_TAG}")
+        tags["TCON"] = TCON(encoding=3, text="Other")           # Genre
+
+        tags.save(mp3_path)
         return True
+
     except Exception as e:
         logger.exception("ID3 write failed: %s", e)
         return False
+
+
+# ============================================================
+#            AUTO APPLY METADATA AFTER ANY DOWNLOAD
+# ============================================================
+
+def finalize_audio_file(path):
+    """
+    هر فایلی که دانلود شد → اگر mp3 بود، اتوماتیک متادیتا بزن
+    """
+    if path.lower().endswith(".mp3"):
+        auto_metadata(path)
+    return path
