@@ -90,14 +90,14 @@ def media_handler(message):
         utils.finalize_audio_file(local_path, file_name)
 
     # caption جذاب
-    caption = f"🎵 {file_name}\n📌 کانال: {utils.make_channel_caption(CHANNEL_ID)}"
+    caption = f"🎵 {title}\n📌 کانال: {utils.make_channel_caption()}"
     database.add_post(local_path, file_id, file_name, media_type, file_name, utils.user_display_name(user), uid)
 
     # send to channel
     try:
         with open(local_path, 'rb') as fh:
             if media_type == 'audio':
-                bot.send_audio(CHANNEL_ID, fh, caption=caption)
+                bot.send_audio(CHANNEL_ID, fh, caption=caption, title=title)
             elif media_type == 'video':
                 bot.send_video(CHANNEL_ID, fh, caption=caption)
             else:
