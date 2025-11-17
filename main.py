@@ -1,7 +1,7 @@
 import os, logging, time, re
 import telebot
 from telebot import types
-from config import BOT_TOKEN, CHANNEL_ID, DOWNLOAD_PATH, DB_PATH
+from config import BOT_TOKEN, CHANNEL_ID, OWNER_ID, REQUIRED_CHANNELS, DOWNLOAD_PATH, DB_PATH
 import database, utils
 from functools import wraps
 
@@ -12,12 +12,10 @@ if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN environment variable is required")
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None)
-
-# init DB and folders
 database.init_db()
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
 
-# decorator: require membership
+# ------------------- DECORATOR: REQUIRE MEMBERSHIP -------------------
 def require_membership(func):
     @wraps(func)
     def wrapper(message, *args, **kwargs):
@@ -25,11 +23,8 @@ def require_membership(func):
         try:
             if not utils.check_membership(bot, uid):
                 kb = types.InlineKeyboardMarkup()
-                kb.add(types.InlineKeyboardButton(
-                    "عضویت در کانال",
-                    url=f"https://t.me/{CHANNEL_ID.lstrip('@')}"
-                ))
-                bot.reply_to(message, "برای استفاده از ربات باید عضو کانال شوید.", reply_markup=kb)
+                kb.add(types.InlineKeyboardButton("عضویت در کانال", url=f"https://t.me/{CHANNEL_ID.lstrip('@')}"))
+                bot.reply_to(message, "❌ برای استفاده از ربات باید عضو کانال شوید.", reply_markup=kb)
                 return
         except Exception as e:
             logger.exception("membership check failed: %s", e)
@@ -38,21 +33,21 @@ def require_membership(func):
         return func(message, *args, **kwargs)
     return wrapper
 
-# -------- راهنمای شروع --------
-@bot.message_handler(commands=['start'])
+# ------------------- START / HELP -------------------
+@bot.message_handler(commands=['start','help'])
 def cmd_start(m):
-    text = (
-        "سلام! 👋\n\n"
-        "این ربات می‌تواند فایل‌های صوتی و لینک‌های SoundCloud را دانلود و در کانال منتشر کند 🎵\n"
-        "📌 نحوه کار:\n"
-        "1️⃣ لینک SoundCloud یا فایل صوتی خود را اینجا ارسال کنید.\n"
-        "2️⃣ ربات فایل را دانلود می‌کند و کپشن جذاب با نام آهنگ ایجاد می‌کند.\n"
-        "3️⃣ فایل در کانال منتشر خواهد شد ✅\n\n"
-        "توجه: لطفاً عضو کانال باشید تا ربات فایل‌ها را دریافت کند."
+    msg = (
+        "سلام! 👋\n"
+        "این ربات مدیریت مدیا است.\n\n"
+        "📌 قابلیت‌ها:\n"
+        "🎵 دانلود و انتشار موسیقی از لینک‌ها (مثل SoundCloud)\n"
+        "🎬 ارسال و انتشار ویدئو و فایل‌ها به کانال\n"
+        "📥 فایل‌های فوروارد شده هم قابل انتشار هستند\n\n"
+        "⚠️ حتما عضو کانال باشید تا بتوانید فایل ارسال کنید."
     )
-    bot.send_message(m.chat.id, text)
+    bot.send_message(m.chat.id, msg)
 
-# -------- دریافت فایل‌ها ----------
+# ------------------- MEDIA HANDLER -------------------
 @bot.message_handler(content_types=['audio','video','document'])
 @require_membership
 def media_handler(message):
@@ -60,7 +55,7 @@ def media_handler(message):
     uid = user.id
     database.add_or_update_user(uid, user.first_name or "", user.last_name or "", getattr(user, 'username', '') or "")
 
-    # شناسایی نوع فایل
+    # identify file info
     if message.content_type == 'audio':
         file_id = message.audio.file_id
         file_name = message.audio.title or f"audio_{int(time.time())}.mp3"
@@ -74,7 +69,7 @@ def media_handler(message):
         file_name = message.document.file_name or f"file_{int(time.time())}"
         media_type = 'document'
 
-    # دانلود فایل
+    # download locally
     try:
         finfo = bot.get_file(file_id)
         data = bot.download_file(finfo.file_path)
@@ -84,31 +79,16 @@ def media_handler(message):
             f.write(data)
     except Exception as e:
         logger.exception("download error: %s", e)
-        bot.reply_to(message, "❌ خطا در دریافت فایل. دوباره تلاش کنید.")
+        bot.reply_to(message, "❌ خطا در دریافت فایل.")
         return
 
-    # کپشن جذاب
-    title = os.path.splitext(file_name)[0]
-    caption = (
-        f"🎵 آهنگ جدید: {title}\n"
-        f"💌 ارسال شده توسط: {user.first_name}\n"
-        f"🔗 کانال ما: {CHANNEL_ID}\n\n"
-        f"از ربات استفاده کنید و همیشه موسیقی‌های جدید دریافت کنید! 🎧"
-    )
+    caption = f"🎵 نام موزیک / فایل: {file_name}\n{utils.make_channel_caption()}"
+    database.add_post(local_path, file_id, file_name, media_type, file_name, utils.user_display_name(user), uid)
 
-    # نوشتن ID3 اگر mp3
-    if media_type == 'audio' and local_path.lower().endswith('.mp3'):
-        try:
-            utils.write_id3_channel_tag(local_path, CHANNEL_ID, title=title)
-        except Exception as e:
-            logger.exception("ID3 tagging failed: %s", e)
-
-    # ذخیره در دیتابیس
-    pid = database.add_post(local_path, file_id, file_name, media_type, "", utils.user_display_name(user), uid)
-
-    # ارسال به کانال
+    # send to channel
     try:
         if media_type == 'audio':
+            utils.finalize_audio_file(local_path, file_name)
             with open(local_path, 'rb') as fh:
                 sent = bot.send_audio(CHANNEL_ID, fh, caption=caption)
         elif media_type == 'video':
@@ -117,13 +97,12 @@ def media_handler(message):
         else:
             with open(local_path, 'rb') as fh:
                 sent = bot.send_document(CHANNEL_ID, fh, caption=caption)
-        database.mark_posted(pid, getattr(sent, 'message_id', None))
         bot.reply_to(message, "✅ فایل شما با موفقیت در کانال منتشر شد.")
     except Exception as e:
         logger.exception("post to channel error: %s", e)
         bot.reply_to(message, f"❌ خطا در ارسال به کانال: {e}")
 
-# -------- لینک SoundCloud ----------
+# ------------------- SOUNDCLOUD HANDLER -------------------
 @bot.message_handler(func=lambda m: isinstance(m.text, str) and 'soundcloud.com' in m.text.lower())
 @require_membership
 def sc_handler(message):
@@ -134,44 +113,25 @@ def sc_handler(message):
     bot.reply_to(message, "✅ لینک دریافت شد، در حال پردازش...")
 
     try:
-        local_path, info = utils.download_with_ytdlp(url, outdir=DOWNLOAD_PATH)
-        title = info.get('title', f"soundcloud_{int(time.time())}")
-        ext = os.path.splitext(local_path)[1] or '.mp3'
-        safe_name = re.sub(r'[^A-Za-z0-9\.\-_ء-ي ]', '_', f"{title}{ext}")
-        final_path = os.path.join(DOWNLOAD_PATH, safe_name)
-        os.rename(local_path, final_path)
+        local_path, info = utils.download_with_ytdlp(url, outdir=DOWNLOAD_PATH, filename_prefix=f"{uid}_sc")
+        title = info.get('title','SoundCloud Track')
+        utils.finalize_audio_file(local_path, title)
 
-        # نوشتن ID3 و متن کانال
-        if final_path.lower().endswith('.mp3'):
-            try:
-                utils.write_id3_channel_tag(final_path, CHANNEL_ID, title=title)
-            except Exception as e:
-                logger.exception("ID3 tagging failed: %s", e)
-
-        # کپشن جذاب
-        caption = (
-            f"🎧 آهنگ جدید از SoundCloud 🎧\n"
-            f"🎵 عنوان: {title}\n"
-            f"💌 ارسال شده توسط: {user.first_name}\n"
-            f"🔗 کانال ما: {CHANNEL_ID}\n\n"
-            f"از ربات استفاده کنید و همیشه آهنگ‌های جدید را دریافت کنید! 🎶"
-        )
-
-        # ارسال به کانال
-        with open(final_path, 'rb') as fh:
-            sent = bot.send_audio(CHANNEL_ID, fh, caption=caption)
-        bot.reply_to(message, "✅ فایل SoundCloud دانلود و منتشر شد.")
-        database.add_post(final_path, None, safe_name, 'soundcloud', title, utils.user_display_name(user), uid)
+        caption = f"🎵 {title}\n{utils.make_channel_caption()}"
+        with open(local_path, 'rb') as fh:
+            bot.send_audio(CHANNEL_ID, fh, caption=caption)
+        bot.reply_to(message, "✅ فایل SoundCloud دانلود و در کانال منتشر شد.")
+        database.add_post(local_path, None, os.path.basename(local_path), 'soundcloud', title, utils.user_display_name(user), uid)
     except Exception as e:
         logger.exception("SoundCloud download error: %s", e)
         bot.reply_to(message, f"❌ دانلود ناموفق: {e}")
 
-# -------- safe startup ----------
+# ------------------- START POLLING -------------------
 if __name__ == '__main__':
     try:
         try: bot.remove_webhook()
         except: pass
-        logger.info("Webhook removed (if any). Starting polling...")
+        logger.info("Webhook removed. Starting polling...")
         bot.infinity_polling(timeout=60, long_polling_timeout=60)
     except Exception as e:
         logger.exception("Fatal bot error: %s", e)
