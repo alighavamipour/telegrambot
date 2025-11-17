@@ -21,10 +21,11 @@ def user_display_name(user):
     return (fn + (" " + ln if ln else "")).strip() or "ناشناس"
 
 # ------------------- MAKE CHANNEL CAPTION -------------------
-def make_channel_caption(channel_id):
-    if channel_id.startswith("@"):
-        return f"https://t.me/{channel_id.lstrip('@')}"
-    return str(channel_id)
+def make_channel_caption(channel_id, song_title=None):
+    """ کپشن جذاب برای فایل‌های منتشر شده """
+    base_title = f"🎵 {song_title}" if song_title else ""
+    base = f"{base_title}\n📢 کانال ما: https://t.me/{channel_id.lstrip('@')}\n✨ از شنیدن لذت ببرید!"
+    return base
 
 # ------------------- CHECK MEMBERSHIP -------------------
 def check_membership(bot, user_id):
@@ -37,8 +38,6 @@ def check_membership(bot, user_id):
     except Exception as e:
         logging.error("Membership check failed: %s", e)
         return False
-
-
 
 # ============================================================
 #                  YT-DLP UNIVERSAL DOWNLOADER
@@ -63,7 +62,6 @@ def download_with_ytdlp(url, outdir=DOWNLOAD_PATH, filename_prefix=None):
         fname = ydl.prepare_filename(info)
         return fname, info
 
-
 # ============================================================
 #                 AUTO METADATA (FULL ID3 TAGGING)
 # ============================================================
@@ -74,8 +72,8 @@ from mutagen.id3 import (
 
 CHANNEL_TAG = "@voxxboxx"
 
-def auto_metadata(mp3_path):
-    """ نوشتن خودکار تمام متادیتای لازم روی هر فایل mp3 """
+def auto_metadata(mp3_path, title=None):
+    """ نوشتن خودکار متادیتای mp3 با اسم واقعی آهنگ """
     try:
         if not mp3_path.lower().endswith('.mp3'):
             return False
@@ -85,14 +83,18 @@ def auto_metadata(mp3_path):
         except ID3NoHeaderError:
             tags = ID3()
 
+        song_title = title or "Audio"
+
         # ---------------- SET FULL METADATA ----------------
-        tags["TIT2"] = TIT2(encoding=3, text="Audio")
-        tags["TPE1"] = TPE1(encoding=3, text=CHANNEL_TAG)       # Artist
-        tags["TALB"] = TALB(encoding=3, text=CHANNEL_TAG)       # Album
-        tags["TPE2"] = TPE2(encoding=3, text=CHANNEL_TAG)       # Performer
-        tags["COMM"] = COMM(encoding=3, lang="eng", desc="Comment",
-                            text=f"Downloaded from {CHANNEL_TAG}")
-        tags["TCON"] = TCON(encoding=3, text="Other")           # Genre
+        tags["TIT2"] = TIT2(encoding=3, text=song_title)  # Song title
+        tags["TPE1"] = TPE1(encoding=3, text=CHANNEL_TAG)  # Artist
+        tags["TALB"] = TALB(encoding=3, text=CHANNEL_TAG)  # Album
+        tags["TPE2"] = TPE2(encoding=3, text=CHANNEL_TAG)  # Performer
+        tags["COMM"] = COMM(
+            encoding=3, lang="eng", desc="Comment",
+            text=f"🎵 {song_title} — دانلود شده از {CHANNEL_TAG}"
+        )
+        tags["TCON"] = TCON(encoding=3, text="Music")       # Genre
 
         tags.save(mp3_path)
         return True
@@ -101,15 +103,14 @@ def auto_metadata(mp3_path):
         logger.exception("ID3 write failed: %s", e)
         return False
 
-
 # ============================================================
 #            AUTO APPLY METADATA AFTER ANY DOWNLOAD
 # ============================================================
-
-def finalize_audio_file(path):
+def finalize_audio_file(path, title=None):
     """
     هر فایلی که دانلود شد → اگر mp3 بود، اتوماتیک متادیتا بزن
+    title: اسم واقعی آهنگ
     """
     if path.lower().endswith(".mp3"):
-        auto_metadata(path)
+        auto_metadata(path, title=title)
     return path
