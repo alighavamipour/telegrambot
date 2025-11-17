@@ -89,15 +89,15 @@ def media_handler(message):
     if media_type == 'audio':
         utils.finalize_audio_file(local_path, file_name)
 
-    # caption جذاب
-    caption = f"🎵 {title}\n📌 کانال: {utils.make_channel_caption()}"
-    database.add_post(local_path, file_id, file_name, media_type, file_name, utils.user_display_name(user), uid)
+    # caption جذاب (تکرار "کانال" حذف شد)
+    caption = f"🎵 {file_name}\n📌 {utils.make_channel_caption(CHANNEL_ID)}"
+    database.add_post(local_path, file_id, safe_name, media_type, file_name, utils.user_display_name(user), uid)
 
     # send to channel
     try:
         with open(local_path, 'rb') as fh:
             if media_type == 'audio':
-                bot.send_audio(CHANNEL_ID, fh, caption=caption, title=title)
+                bot.send_audio(CHANNEL_ID, fh, caption=caption, title=file_name)
             elif media_type == 'video':
                 bot.send_video(CHANNEL_ID, fh, caption=caption)
             else:
@@ -122,10 +122,10 @@ def sc_handler(message):
         title = info.get('title', 'SoundCloud Track')
         utils.finalize_audio_file(local_path, title)
 
-        # caption جذاب
-        caption = f"🎵 {title}\n📌 کانال: {utils.make_channel_caption(CHANNEL_ID)}"
+        # caption جذاب (تکرار "کانال" حذف شد)
+        caption = f"🎵 {title}\n📌 {utils.make_channel_caption(CHANNEL_ID)}"
         with open(local_path, 'rb') as fh:
-            bot.send_audio(CHANNEL_ID, fh, caption=caption)
+            bot.send_audio(CHANNEL_ID, fh, caption=caption, title=title)
 
         bot.reply_to(message, "✅ فایل SoundCloud دانلود و در کانال منتشر شد.")
         database.add_post(local_path, None, os.path.basename(local_path), 'soundcloud', title, utils.user_display_name(user), uid)
