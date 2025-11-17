@@ -23,11 +23,14 @@ def require_membership(func):
         try:
             if not utils.check_membership(bot, uid):
                 kb = types.InlineKeyboardMarkup()
-                kb.add(types.InlineKeyboardButton("عضویت در کانال", url=f"https://t.me/{CHANNEL_ID.lstrip('@')}"))
-                bot.reply_to(message, "❌ برای استفاده از ربات باید عضو کانال شوید.", reply_markup=kb)
+                kb.add(types.InlineKeyboardButton(
+                    "👥 عضویت در کانال",
+                    url=f"https://t.me/{CHANNEL_ID.lstrip('@')}"
+                ))
+                bot.reply_to(message, "❌ برای استفاده از ربات حتماً باید عضو کانال شوید.", reply_markup=kb)
                 return
         except Exception as e:
-            logger.exception("membership check failed: %s", e)
+            logger.exception("Membership check failed: %s", e)
             bot.reply_to(message, "❌ خطا در بررسی عضویت. دوباره تلاش کنید.")
             return
         return func(message, *args, **kwargs)
@@ -42,8 +45,8 @@ def cmd_start(m):
         "📌 قابلیت‌ها:\n"
         "🎵 دانلود و انتشار موسیقی از لینک‌ها (مثل SoundCloud)\n"
         "🎬 ارسال و انتشار ویدئو و فایل‌ها به کانال\n"
-        "📥 فایل‌های فوروارد شده هم قابل انتشار هستند\n\n"
-        "⚠️  حتما عضو کانال باشید تا بتوانید فایل ارسال کنید و این ربات به صورت رایگان در اختیار شما قرار گرفته است، خواهشمند است ما را حمایت کنید تا انگیزه ای شود برای ارائه خدمات بهتر"
+        "📥 حتی فایل‌های فوروارد شده نیز قابل انتشار هستند\n\n"
+        "⚠️ حتما عضو کانال باشید تا بتوانید فایل ارسال کنید."
     )
     bot.send_message(m.chat.id, msg)
 
@@ -82,21 +85,23 @@ def media_handler(message):
         bot.reply_to(message, "❌ خطا در دریافت فایل.")
         return
 
-    caption = f"🎵 نام موزیک / فایل: {file_name}\n{utils.make_channel_caption()}"
+    # finalize audio file if mp3
+    if media_type == 'audio':
+        utils.finalize_audio_file(local_path, file_name)
+
+    # caption جذاب
+    caption = f"🎵 {file_name}\n📌 کانال: {utils.make_channel_caption(CHANNEL_ID)}"
     database.add_post(local_path, file_id, file_name, media_type, file_name, utils.user_display_name(user), uid)
 
     # send to channel
     try:
-        if media_type == 'audio':
-            utils.finalize_audio_file(local_path, file_name)
-            with open(local_path, 'rb') as fh:
-                sent = bot.send_audio(CHANNEL_ID, fh, caption=caption)
-        elif media_type == 'video':
-            with open(local_path, 'rb') as fh:
-                sent = bot.send_video(CHANNEL_ID, fh, caption=caption)
-        else:
-            with open(local_path, 'rb') as fh:
-                sent = bot.send_document(CHANNEL_ID, fh, caption=caption)
+        with open(local_path, 'rb') as fh:
+            if media_type == 'audio':
+                bot.send_audio(CHANNEL_ID, fh, caption=caption)
+            elif media_type == 'video':
+                bot.send_video(CHANNEL_ID, fh, caption=caption)
+            else:
+                bot.send_document(CHANNEL_ID, fh, caption=caption)
         bot.reply_to(message, "✅ فایل شما با موفقیت در کانال منتشر شد.")
     except Exception as e:
         logger.exception("post to channel error: %s", e)
@@ -110,16 +115,18 @@ def sc_handler(message):
     uid = user.id
     database.add_or_update_user(uid, user.first_name or "", user.last_name or "", getattr(user, 'username', '') or "")
     url = message.text.strip()
-    bot.reply_to(message, "✅ لینک دریافت شد، چند لحظه منتظر بمانید، در حال پردازش...")
+    bot.reply_to(message, "✅ لینک دریافت شد، لطفاً چند لحظه صبر کنید...")
 
     try:
-        local_path, info = utils.download_with_ytdlp(url, outdir=DOWNLOAD_PATH, filename_prefix=f"{uid}_sc")
-        title = info.get('title','SoundCloud Track')
+        local_path, info = utils.download_with_ytdlp(url, outdir=DOWNLOAD_PATH)
+        title = info.get('title', 'SoundCloud Track')
         utils.finalize_audio_file(local_path, title)
 
-        caption = f"🎵 {title}\n{utils.make_channel_caption()}"
+        # caption جذاب
+        caption = f"🎵 {title}\n📌 کانال: {utils.make_channel_caption(CHANNEL_ID)}"
         with open(local_path, 'rb') as fh:
             bot.send_audio(CHANNEL_ID, fh, caption=caption)
+
         bot.reply_to(message, "✅ فایل SoundCloud دانلود و در کانال منتشر شد.")
         database.add_post(local_path, None, os.path.basename(local_path), 'soundcloud', title, utils.user_display_name(user), uid)
     except Exception as e:
