@@ -30,13 +30,14 @@ def make_channel_caption(channel_id):
 def check_membership(bot, user_id):
     try:
         for ch in REQUIRED_CHANNELS:
-            st = bot.get_chat_member(ch, user_id)
-            if st.status in ['left', 'kicked']:
-                return False
-        return True
-    except Exception as e:
-        logger.exception("membership check failed: %s", e)
+            member = bot.get_chat_member(ch, user_id)
+            if member.status not in ['left', 'kicked']:
+                return True
         return False
+    except Exception as e:
+        logging.error("Membership check failed: %s", e)
+        return False
+
 
 
 # ============================================================
