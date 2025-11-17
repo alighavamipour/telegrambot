@@ -22,13 +22,18 @@ def require_membership(func):
     @wraps(func)
     def wrapper(message, *args, **kwargs):
         uid = message.from_user.id
-        if not utils.check_membership(bot, uid):
-            kb = types.InlineKeyboardMarkup()
-            kb.add(types.InlineKeyboardButton(
-                "عضویت در کانال",
-                url=f"https://t.me/{CHANNEL_ID.lstrip('@')}"  # لینک کامل
-            ))
-            bot.reply_to(message, "برای استفاده از ربات باید عضو کانال شوید.", reply_markup=kb)
+        try:
+            if not utils.check_membership(bot, uid):
+                kb = types.InlineKeyboardMarkup()
+                kb.add(types.InlineKeyboardButton(
+                    "عضویت در کانال",
+                    url=f"https://t.me/{CHANNEL_ID.lstrip('@')}"
+                ))
+                bot.reply_to(message, "برای استفاده از ربات باید عضو کانال شوید.", reply_markup=kb)
+                return
+        except Exception as e:
+            logger.exception("membership check failed: %s", e)
+            bot.reply_to(message, "❌ خطا در بررسی عضویت. دوباره تلاش کنید.")
             return
         return func(message, *args, **kwargs)
     return wrapper
@@ -56,6 +61,11 @@ def media_handler(message):
     database.add_or_update_user(uid, user.first_name or "", user.last_name or "", getattr(user, 'username', '') or "")
     vip = database.is_vip(uid) or (uid == OWNER_ID)
 
+    # check file size for documents
+    if message.content_type == 'document' and message.document.file_size > 50*1024*1024:
+        bot.reply_to(message, "❌ فایل خیلی بزرگ است و نمی‌توان آن را دانلود کرد.")
+        return
+
     # identify file info and local save name
     if message.content_type == 'audio':
         file_id = message.audio.file_id
@@ -74,7 +84,7 @@ def media_handler(message):
     try:
         finfo = bot.get_file(file_id)
         data = bot.download_file(finfo.file_path)
-        safe_name = re.sub(r'[^A-Za-z0-9\\.\\-_\\u0600-\\u06FF ]', '_', file_name)
+        safe_name = re.sub(r'[^A-Za-z0-9\.\-_ء-ي ]', '_', file_name)
         local_path = os.path.join(DOWNLOAD_PATH, safe_name)
         with open(local_path, 'wb') as f:
             f.write(data)
@@ -83,7 +93,6 @@ def media_handler(message):
         bot.reply_to(message, "خطا در دریافت فایل. دوباره تلاش کنید.")
         return
 
-    # clean caption
     channel_link = utils.make_channel_caption(CHANNEL_ID)
     caption = f"{channel_link}\nID: {CHANNEL_ID}"
     uploader_name = utils.user_display_name(user)
@@ -95,7 +104,6 @@ def media_handler(message):
         except Exception as e:
             logger.exception("ID3 tagging failed: %s", e)
 
-    # save post record
     pid = database.add_post(local_path, file_id, file_name, media_type, "", uploader_name, uid)
 
     if vip:
@@ -127,7 +135,6 @@ def media_handler(message):
                     logger.exception("notify owner error: %s", e)
                     bot.send_message(reply.chat.id, "خطا در ارسال فایل برای ادمین.")
                 return
-            # save chosen display name
             conn = database.get_conn()
             cur = conn.cursor()
             cur.execute("UPDATE posts SET title=? WHERE id=?", (name, pid))
@@ -140,18 +147,42 @@ def media_handler(message):
             bot.send_message(reply.chat.id, "درخواست شما ثبت شد. بعد از تایید مدیر منتشر خواهد شد.")
         bot.register_next_step_handler(msg, ask_name_handler)
 
-# -------- بقیه کد شما بدون تغییر
-# فقط در تمام دکمه‌های InlineKeyboardButton که url دارند، مطمئن شوید:
-# url=f"https://t.me/{CHANNEL_ID.lstrip('@')}"
-# استفاده شود
+# -------- SoundCloud handler ----------
+@bot.message_handler(func=lambda m: isinstance(m.text, str) and 'soundcloud.com' in m.text.lower())
+@require_membership
+def sc_handler(message):
+    user = message.from_user
+    uid = user.id
+    database.add_or_update_user(uid, user.first_name or "", user.last_name or "", getattr(user, 'username', '') or "")
+    text = message.text.strip()
+    urls = re.findall(r'(https?://\S+)', text)
+    url = urls[0] if urls else text
+    bot.reply_to(message, "✅ لینک دریافت شد، در حال پردازش...")
+
+    try:
+        local_path, info = utils.download_with_ytdlp(url, outdir=DOWNLOAD_PATH, filename_prefix=f"{uid}_sc")
+        if local_path.lower().endswith('.mp3'):
+            try: utils.write_id3_channel_tag(local_path, CHANNEL_ID)
+            except: pass
+
+        if uid == OWNER_ID or database.is_vip(uid):
+            with open(local_path, 'rb') as fh:
+                sent = bot.send_audio(CHANNEL_ID, fh, caption=f"{utils.make_channel_caption(CHANNEL_ID)}\nID: {CHANNEL_ID}")
+            bot.reply_to(message, "✅ فایل SoundCloud دانلود و منتشر شد.")
+        else:
+            pid = database.add_post(local_path, None, os.path.basename(local_path), 'soundcloud', info.get('title',''), utils.user_display_name(user), uid)
+            bot.send_message(OWNER_ID, f"📥 کاربر {utils.user_display_name(user)} لینک SoundCloud فرستاده — بررسی لازم:")
+            bot.send_document(OWNER_ID, open(local_path, 'rb'))
+            bot.reply_to(message, "نسخه دانلود شده برای بررسی به ادمین ارسال شد.")
+    except Exception as e:
+        logger.exception("SoundCloud download error: %s", e)
+        bot.reply_to(message, f"❌ دانلود ناموفق: {e}")
 
 # -------- safe startup ----------
 if __name__ == '__main__':
     try:
-        try:
-            bot.remove_webhook()
-        except Exception:
-            pass
+        try: bot.remove_webhook()
+        except: pass
         logger.info("Webhook removed (if any). Starting polling...")
         bot.infinity_polling(timeout=60, long_polling_timeout=60)
     except Exception as e:
