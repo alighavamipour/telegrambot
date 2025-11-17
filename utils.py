@@ -43,7 +43,8 @@ def check_membership(bot, user_id):
 # ------------------- DOWNLOAD WITH YT-DLP -------------------
 def download_with_ytdlp(url, outdir=DOWNLOAD_PATH, filename_prefix=None):
     os.makedirs(outdir, exist_ok=True)
-    outtmpl = os.path.join(outdir, (filename_prefix or '%(title)s') + '.%(ext)s')
+    # filename_prefix اگر داده شود اضافه می‌شود، در غیر اینصورت از عنوان استفاده شود
+    outtmpl = os.path.join(outdir, (filename_prefix + '_%(title)s' if filename_prefix else '%(title)s') + '.%(ext)s')
     opts = {
         'format': 'bestaudio/best',
         'outtmpl': outtmpl,
@@ -54,7 +55,13 @@ def download_with_ytdlp(url, outdir=DOWNLOAD_PATH, filename_prefix=None):
     }
     with YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
+        # نام فایل دقیق مطابق عنوان آهنگ
         fname = ydl.prepare_filename(info)
+        # حذف کاراکترهای غیر مجاز از اسم فایل
+        safe_fname = re.sub(r'[^A-Za-z0-9\.\-_ء-ي ]', '_', fname)
+        if safe_fname != fname:
+            os.rename(fname, safe_fname)
+            fname = safe_fname
         return fname, info
 
 # ------------------- AUTO METADATA -------------------
@@ -80,7 +87,13 @@ def auto_metadata(mp3_path, title=None):
         logger.exception("ID3 write failed: %s", e)
         return False
 
+# ------------------- FINALIZE AUDIO FILE -------------------
 def finalize_audio_file(path, title=None):
+    """
+    فایل mp3 را آماده انتشار می‌کند:
+    - متادیتا می‌زند
+    - نام فایل را با عنوان آهنگ هماهنگ می‌کند
+    """
     if path.lower().endswith(".mp3"):
         auto_metadata(path, title)
     return path
