@@ -26,7 +26,7 @@ def user_display_name(user):
 # ------------------- MAKE CHANNEL CAPTION -------------------
 def make_channel_caption(channel_id=None):
     ch = channel_id or CHANNEL_ID
-    return f"https://t.me/{ch.lstrip('@')}"  # فقط لینک، بدون "کانال ما"
+    return f"https://t.me/{ch.lstrip('@')}"
 
 # ------------------- CHECK MEMBERSHIP -------------------
 def check_membership(bot, user_id):
@@ -37,13 +37,13 @@ def check_membership(bot, user_id):
                 return True
         return False
     except Exception as e:
-        logging.error("Membership check failed: %s", e)
+        logger.error("Membership check failed: %s", e)
         return False
 
 # ------------------- DOWNLOAD WITH YT-DLP -------------------
 def download_with_ytdlp(url, outdir=DOWNLOAD_PATH, filename_prefix=None):
     os.makedirs(outdir, exist_ok=True)
-    outtmpl = os.path.join(outdir, '%(title)s.%(ext)s')  # فقط عنوان آهنگ
+    outtmpl = os.path.join(outdir, '%(title)s.%(ext)s')
     opts = {
         'format': 'bestaudio/best',
         'outtmpl': outtmpl,
@@ -54,14 +54,13 @@ def download_with_ytdlp(url, outdir=DOWNLOAD_PATH, filename_prefix=None):
     }
     with YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
-        # نام فایل دقیق مطابق عنوان آهنگ
         fname = ydl.prepare_filename(info)
-        # حذف کاراکترهای غیرمجاز از اسم فایل
-        title_safe = re.sub(r'[^A-Za-z0-9\.\-_ء-ي ]', '_', info.get('title', 'audio'))
+        title_safe = re.sub(r'[^A-Za-z0-9\.\-_ء-ي ]', '_', info.get('title', 'audio')).strip()
         ext = os.path.splitext(fname)[1]
         safe_fname = os.path.join(outdir, f"{title_safe}{ext}")
-        if safe_fname != fname:
-            os.rename(fname, safe_fname)
+        os.makedirs(os.path.dirname(safe_fname), exist_ok=True)
+        if safe_fname != fname and os.path.exists(fname):
+            os.replace(fname, safe_fname)
         return safe_fname, info
 
 # ------------------- AUTO METADATA -------------------
@@ -96,12 +95,12 @@ def finalize_audio_file(path, title=None):
     """
     if path.lower().endswith(".mp3"):
         auto_metadata(path, title)
-        # تغییر نام فایل مطابق عنوان آهنگ
         dir_path = os.path.dirname(path)
         ext = os.path.splitext(path)[1]
-        title_safe = re.sub(r'[^A-Za-z0-9\.\-_ء-ي ]', '_', title or 'audio')
+        title_safe = re.sub(r'[^A-Za-z0-9\.\-_ء-ي ]', '_', title or 'audio').strip()
         new_path = os.path.join(dir_path, f"{title_safe}{ext}")
-        if new_path != path:
-            os.rename(path, new_path)
+        os.makedirs(dir_path, exist_ok=True)
+        if new_path != path and os.path.exists(path):
+            os.replace(path, new_path)
             path = new_path
     return path
