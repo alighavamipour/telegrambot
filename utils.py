@@ -70,10 +70,18 @@ def download_with_ytdlp(url, outdir=DOWNLOAD_PATH, filename_prefix=None):
 
 # ------------------- AUTO METADATA -------------------
 def auto_metadata(mp3_path, title=None):
-    """اضافه کردن خودکار تگ‌های ID3 به فایل MP3"""
-    return auto_metadata_full(mp3_path, title=title, artist=CHANNEL_TAG, comment=f"🎵 Downloaded from {CHANNEL_TAG}")
+    """اضافه کردن خودکار تگ‌های ID3 به فایل MP3 با آی‌دی کانال"""
+    return auto_metadata_full(
+        mp3_path,
+        title=title,
+        artist=CHANNEL_TAG,
+        album=CHANNEL_TAG,
+        composer=CHANNEL_TAG,
+        comment=f"🎵 Published via {CHANNEL_TAG}"
+    )
 
-def auto_metadata_full(mp3_path, title=None, artist=None, comment=None):
+def auto_metadata_full(mp3_path, title=None, artist=None, album=None, composer=None, comment=None):
+    """نوشتن تگ‌های کامل ID3 روی فایل MP3"""
     try:
         if not mp3_path.lower().endswith('.mp3'):
             return False
@@ -83,11 +91,11 @@ def auto_metadata_full(mp3_path, title=None, artist=None, comment=None):
             tags = ID3()
 
         tags["TIT2"] = TIT2(encoding=3, text=title or "Audio")
-        tags["TPE1"] = TPE1(encoding=3, text=artist or CHANNEL_TAG)
-        tags["TALB"] = TALB(encoding=3, text=artist or CHANNEL_TAG)
-        tags["TPE2"] = TPE2(encoding=3, text=artist or CHANNEL_TAG)
+        tags["TPE1"] = TPE1(encoding=3, text=artist or CHANNEL_TAG)   # Artist
+        tags["TALB"] = TALB(encoding=3, text=album or CHANNEL_TAG)    # Album
+        tags["TPE2"] = TPE2(encoding=3, text=composer or CHANNEL_TAG) # Composer
         tags["COMM"] = COMM(encoding=3, lang="eng", desc="Comment",
-                            text=comment or f"🎵 Downloaded from {CHANNEL_TAG}")
+                            text=comment or f"🎵 Published via {CHANNEL_TAG}")
         tags["TCON"] = TCON(encoding=3, text="Music")
         tags.save(mp3_path)
         return True
@@ -97,9 +105,16 @@ def auto_metadata_full(mp3_path, title=None, artist=None, comment=None):
 
 # ------------------- FINALIZE AUDIO FILE -------------------
 def finalize_audio_file(path, title=None):
-    """فایل mp3 را آماده انتشار می‌کند"""
+    """فایل mp3 را آماده انتشار می‌کند و تگ‌های کامل را اعمال می‌کند"""
     if path.lower().endswith(".mp3"):
-        auto_metadata_full(path, title=title, artist=CHANNEL_TAG, comment=f"🎵 Downloaded from {CHANNEL_TAG}")
+        auto_metadata_full(
+            path,
+            title=title,
+            artist=CHANNEL_TAG,
+            album=CHANNEL_TAG,
+            composer=CHANNEL_TAG,
+            comment=f"🎵 Published via {CHANNEL_TAG}"
+        )
         dir_path = os.path.dirname(path)
         ext = os.path.splitext(path)[1]
         title_safe = re.sub(r'[^A-Za-z0-9\.\-_ء-ي ]', '_', title or 'audio').strip()
@@ -107,6 +122,15 @@ def finalize_audio_file(path, title=None):
         os.makedirs(dir_path, exist_ok=True)
         if new_path != path and os.path.exists(path):
             os.replace(path, new_path)
+            # دوباره تگ‌ها را روی نام جدید اعمال کن
+            auto_metadata_full(
+                new_path,
+                title=title,
+                artist=CHANNEL_TAG,
+                album=CHANNEL_TAG,
+                composer=CHANNEL_TAG,
+                comment=f"🎵 Published via {CHANNEL_TAG}"
+            )
             path = new_path
     return path
 
