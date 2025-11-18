@@ -82,6 +82,9 @@ def add_channel_metadata(file_path, channel_name):
     from mutagen.easyid3 import EasyID3
     from mutagen.id3 import ID3NoHeaderError
     try:
+        # فقط برای فایل‌های mp3 متادیتا اضافه می‌کنیم
+        if not file_path.lower().endswith('.mp3'):
+            return
         try:
             audio = EasyID3(file_path)
         except ID3NoHeaderError:
@@ -92,7 +95,8 @@ def add_channel_metadata(file_path, channel_name):
         title = audio.get('title', [os.path.basename(file_path)])[0]
         audio['title'] = title
         audio['artist'] = channel_name
-        audio['comment'] = f"Published via {channel_name}"
+        # استفاده از comment استاندارد EasyID3
+        audio['comments'] = [f"Published via {channel_name}"]
         audio.save(file_path)
     except Exception as e:
         logger.warning("Cannot add metadata to audio file: %s", e)
@@ -124,7 +128,7 @@ def media_handler(message):
 
     processing_msg = bot.reply_to(message, "📥 فایل دریافت شد و در حال پردازش است… لطفاً صبر کنید.")
 
-    # ساخت نام امن حتی اگر فوروارد شده باشد
+    # نام امن
     safe_name = re.sub(r'[^A-Za-z0-9\.\-_ء-ي ]', '_', file_name or f"{media_type}_{int(time.time())}")
     local_path = os.path.join(DOWNLOAD_PATH, safe_name)
 
@@ -141,7 +145,7 @@ def media_handler(message):
         return
 
     if media_type == 'audio':
-        local_path = utils.finalize_audio_file(local_path, file_name)  # <-- اصلاح شد
+        local_path = utils.finalize_audio_file(local_path, file_name)
         add_channel_metadata(local_path, CHANNEL_ID)
 
     caption = f"🎵 {file_name}\n📌 {utils.make_channel_caption(CHANNEL_ID)}"
@@ -178,7 +182,7 @@ def sc_handler(message):
     try:
         local_path, info = utils.download_with_ytdlp(link, outdir=DOWNLOAD_PATH)
         title = info.get('title', 'SoundCloud Track')
-        local_path = utils.finalize_audio_file(local_path, title)  # <-- اصلاح شد
+        local_path = utils.finalize_audio_file(local_path, title)
         add_channel_metadata(local_path, CHANNEL_ID)
 
         caption = f"🎵 {title}\n📌 {utils.make_channel_caption(CHANNEL_ID)}"
