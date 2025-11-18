@@ -134,12 +134,38 @@ def sc_handler(message):
         bot.reply_to(message, f"❌ دانلود ناموفق: {e}")
 
 # ------------------- START POLLING -------------------
+# ------------------- START WEBHOOK -------------------
+from flask import Flask, request
+
+app = Flask(__name__)
+
+WEBHOOK_URL = f"https://{os.getenv('RENDER_EXTERNAL_URL').replace('https://', '')}/webhook"
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    if request.headers.get('content-type') == 'application/json':
+        json_str = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_str)
+        bot.process_new_updates([update])
+        return "OK", 200
+    else:
+        return "Unsupported Media", 403
+
+
+@app.route('/')
+def home():
+    return "Bot is running (Webhook active)."
+
+
 if __name__ == '__main__':
     try:
-        try: bot.remove_webhook()
-        except: pass
-        logger.info("Webhook removed. Starting polling...")
-        bot.infinity_polling(timeout=60, long_polling_timeout=60)
-    except Exception as e:
-        logger.exception("Fatal bot error: %s", e)
-        raise
+        bot.remove_webhook()
+    except:
+        pass
+
+    # ثبت Webhook
+    bot.set_webhook(url=WEBHOOK_URL)
+
+    # اجرای سرور Flask روی Render
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+
