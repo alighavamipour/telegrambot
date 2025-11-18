@@ -1,8 +1,59 @@
+import os, logging, time, re
+import telebot
+from telebot import types
+from config import BOT_TOKEN, CHANNEL_ID, OWNER_ID, REQUIRED_CHANNELS, DOWNLOAD_PATH, DB_PATH
+import database, utils
+from functools import wraps
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN environment variable is required")
+
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None)
+database.init_db()
+os.makedirs(DOWNLOAD_PATH, exist_ok=True)
+
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
+
+# ------------------- DECORATOR: REQUIRE MEMBERSHIP -------------------
+def require_membership(func):
+    @wraps(func)
+    def wrapper(message, *args, **kwargs):
+        uid = message.from_user.id
+        try:
+            if not utils.check_membership(bot, uid):
+                kb = types.InlineKeyboardMarkup()
+                kb.add(types.InlineKeyboardButton(
+                    "👥 عضویت در کانال",
+                    url=f"https://t.me/{CHANNEL_ID.lstrip('@')}"
+                ))
+                bot.reply_to(message, "❌ برای استفاده از ربات حتماً باید عضو کانال شوید.", reply_markup=kb)
+                return
+        except Exception as e:
+            logger.exception("Membership check failed: %s", e)
+            bot.reply_to(message, "❌ خطا در بررسی عضویت. دوباره تلاش کنید.")
+            return
+        return func(message, *args, **kwargs)
+    return wrapper
+
+# ------------------- START / HELP -------------------
+@bot.message_handler(commands=['start','help'])
+def cmd_start(m):
+    msg = (
+        "سلام! 👋\n"
+        "این ربات اختصاصی کانال وکس باکس است.\n\n"
+        "📌 قابلیت‌ها:\n"
+        "🎵 دانلود و انتشار موسیقی از لینک‌ها (مثل SoundCloud)\n"
+        "🎬 ارسال و انتشار ویدئو و فایل‌ها به کانال\n"
+        "📥 حتی فایل‌های فوروارد شده نیز قابل انتشار هستند\n\n"
+        "⚠️ حتما عضو کانال باشید تا بتوانید فایل ارسال کنید."
+    )
+    bot.send_message(m.chat.id, msg)
 
 # ------------------- HELPERS -------------------
 def get_file_info(message):
-    """شناسایی file_id و file_name و media_type برای همه نوع فایل"""
     if message.content_type == 'audio':
         file_id = message.audio.file_id
         file_name = message.audio.file_name or message.audio.title or f"audio_{int(time.time())}.mp3"
@@ -28,7 +79,6 @@ def get_file_info(message):
     return file_id, file_name, media_type, file_size
 
 def add_channel_metadata(file_path, channel_name):
-    """اضافه کردن اطلاعات کانال به متادیتای فایل صوتی"""
     from mutagen.easyid3 import EasyID3
     from mutagen.id3 import ID3NoHeaderError
     try:
@@ -48,7 +98,6 @@ def add_channel_metadata(file_path, channel_name):
         logger.warning("Cannot add metadata to audio file: %s", e)
 
 def extract_soundcloud_link(text):
-    """جدا کردن لینک SoundCloud از متن اضافی"""
     import re
     pattern = r'(https?://(?:www\.)?soundcloud\.com/[^\s]+)'
     match = re.search(pattern, text)
@@ -69,15 +118,12 @@ def media_handler(message):
         bot.reply_to(message, "❌ نوع فایل پشتیبانی نمی‌شود.")
         return
 
-    # بررسی حجم فایل
     if file_size and file_size > MAX_FILE_SIZE:
         bot.reply_to(message, f"❌ حجم فایل بیشتر از 50MB است ({file_size/1024/1024:.2f}MB) و نمی‌توان آن را پردازش کرد.")
         return
 
-    # پیام اولیه به کاربر
     processing_msg = bot.reply_to(message, "📥 فایل دریافت شد و در حال پردازش است… لطفاً صبر کنید.")
 
-    # دانلود فایل
     try:
         finfo = bot.get_file(file_id)
         data = bot.download_file(finfo.file_path)
@@ -90,16 +136,13 @@ def media_handler(message):
         bot.edit_message_text("❌ خطا در دریافت فایل.", processing_msg.chat.id, processing_msg.message_id)
         return
 
-    # finalize audio file if audio
     if media_type == 'audio':
         utils.finalize_audio_file(local_path, file_name)
         add_channel_metadata(local_path, CHANNEL_ID)
 
-    # caption
     caption = f"🎵 {file_name}\n📌 {utils.make_channel_caption(CHANNEL_ID)}"
     database.add_post(local_path, file_id, safe_name, media_type, file_name, utils.user_display_name(user), uid)
 
-    # send to channel
     try:
         with open(local_path, 'rb') as fh:
             if media_type == 'audio':
@@ -151,3 +194,31 @@ def unknown_message_handler(message):
                  "❌ ربات این پیام را نمی‌شناسد.\n\n"
                  "📌 لطفاً یک فایل صوتی، ویدئو، داکیومنت یا لینک SoundCloud ارسال کنید.\n"
                  "برای راهنمایی بیشتر از /help استفاده کنید.")
+
+# ------------------- START WEBHOOK -------------------
+from flask import Flask, request
+
+app = Flask(__name__)
+WEBHOOK_URL = f"https://{os.getenv('RENDER_EXTERNAL_URL').replace('https://', '')}/webhook"
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    if request.headers.get('content-type') == 'application/json':
+        json_str = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_str)
+        bot.process_new_updates([update])
+        return "OK", 200
+    else:
+        return "Unsupported Media", 403
+
+@app.route('/')
+def home():
+    return "Bot is running (Webhook active)."
+
+if __name__ == '__main__':
+    try:
+        bot.remove_webhook()
+    except:
+        pass
+    bot.set_webhook(url=WEBHOOK_URL)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
