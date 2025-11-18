@@ -10,9 +10,6 @@ CHANNEL_TAG = CHANNEL_ID if CHANNEL_ID.startswith("@") else f"@{CHANNEL_ID}"
 
 # ------------------- CLEAN CAPTION -------------------
 def clean_caption(text):
-    """
-    حذف تگ‌ها، لینک‌ها و هشتگ‌ها از متن
-    """
     if not text:
         return ""
     t = re.sub(r'@\w+', '', text)
@@ -22,26 +19,17 @@ def clean_caption(text):
 
 # ------------------- USER DISPLAY NAME -------------------
 def user_display_name(user):
-    """
-    ساخت نام نمایش برای کاربر
-    """
     fn = user.first_name or ""
     ln = user.last_name or ""
     return (fn + (" " + ln if ln else "")).strip() or "ناشناس"
 
 # ------------------- MAKE CHANNEL CAPTION -------------------
 def make_channel_caption(channel_id=None):
-    """
-    لینک کانال برای کپشن
-    """
     ch = channel_id or CHANNEL_ID
     return f"https://t.me/{ch.lstrip('@')}"
 
 # ------------------- CHECK MEMBERSHIP -------------------
 def check_membership(bot, user_id):
-    """
-    بررسی عضویت کاربر در کانال‌های مورد نیاز
-    """
     try:
         for ch in REQUIRED_CHANNELS:
             member = bot.get_chat_member(ch, user_id)
@@ -54,9 +42,6 @@ def check_membership(bot, user_id):
 
 # ------------------- DOWNLOAD WITH YT-DLP -------------------
 def download_with_ytdlp(url, outdir=DOWNLOAD_PATH, filename_prefix=None):
-    """
-    دانلود فایل صوتی از لینک‌ها (مثل SoundCloud) با yt-dlp
-    """
     os.makedirs(outdir, exist_ok=True)
     outtmpl = os.path.join(outdir, '%(title)s.%(ext)s')
     opts = {
@@ -80,9 +65,6 @@ def download_with_ytdlp(url, outdir=DOWNLOAD_PATH, filename_prefix=None):
 
 # ------------------- AUTO METADATA -------------------
 def auto_metadata(mp3_path, title=None):
-    """
-    اضافه کردن خودکار تگ‌های ID3 به فایل MP3
-    """
     try:
         if not mp3_path.lower().endswith('.mp3'):
             return False
@@ -106,11 +88,6 @@ def auto_metadata(mp3_path, title=None):
 
 # ------------------- FINALIZE AUDIO FILE -------------------
 def finalize_audio_file(path, title=None):
-    """
-    فایل mp3 را آماده انتشار می‌کند:
-    - متادیتا می‌زند
-    - نام فایل را با عنوان آهنگ هماهنگ می‌کند
-    """
     if path.lower().endswith(".mp3"):
         auto_metadata(path, title)
         dir_path = os.path.dirname(path)
@@ -122,3 +99,18 @@ def finalize_audio_file(path, title=None):
             os.replace(path, new_path)
             path = new_path
     return path
+
+# ------------------- EXTRACT SOUNDCLOUD LINK -------------------
+def extract_soundcloud_link(text):
+    """
+    استخراج همه لینک‌های SoundCloud:
+    - شامل www یا بدون www
+    - شامل لینک کوتاه شده on.soundcloud.com
+    """
+    if not text:
+        return None
+    pattern = r'https?://(?:on\.)?soundcloud\.com/[^\s]+'
+    match = re.search(pattern, text, re.IGNORECASE)
+    if match:
+        return match.group(0)
+    return None
