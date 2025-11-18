@@ -4,6 +4,8 @@ from telebot import types
 from config import BOT_TOKEN, CHANNEL_ID, OWNER_ID, REQUIRED_CHANNELS, DOWNLOAD_PATH, DB_PATH
 import database, utils
 from functools import wraps
+from mutagen.easyid3 import EasyID3
+from mutagen.id3 import ID3NoHeaderError
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -50,27 +52,59 @@ def cmd_start(m):
     )
     bot.send_message(m.chat.id, msg)
 
+# ------------------- HELPERS -------------------
+def get_file_info(message):
+    """شناسایی file_id و file_name و media_type برای همه نوع فایل"""
+    if message.content_type == 'audio':
+        file_id = message.audio.file_id
+        file_name = message.audio.file_name or message.audio.title or f"audio_{int(time.time())}.mp3"
+        media_type = 'audio'
+    elif message.content_type == 'voice':
+        file_id = message.voice.file_id
+        file_name = f"voice_{int(time.time())}.ogg"
+        media_type = 'audio'
+    elif message.content_type == 'video':
+        file_id = message.video.file_id
+        file_name = message.video.file_name or f"video_{int(time.time())}.mp4"
+        media_type = 'video'
+    elif message.content_type == 'document':
+        file_id = message.document.file_id
+        file_name = message.document.file_name or f"file_{int(time.time())}"
+        media_type = 'document'
+    else:
+        return None, None, None
+    return file_id, file_name, media_type
+
+def add_channel_metadata(file_path, channel_name):
+    """اضافه کردن اطلاعات کانال به متادیتای فایل صوتی"""
+    try:
+        try:
+            audio = EasyID3(file_path)
+        except ID3NoHeaderError:
+            audio = EasyID3()
+            audio.save(file_path)
+            audio = EasyID3(file_path)
+
+        title = audio.get('title', [os.path.basename(file_path)])[0]
+        audio['title'] = title
+        audio['artist'] = channel_name
+        audio['comment'] = f"Published via {channel_name}"
+        audio.save(file_path)
+    except Exception as e:
+        logger.warning("Cannot add metadata to audio file: %s", e)
+
 # ------------------- MEDIA HANDLER -------------------
-@bot.message_handler(content_types=['audio','video','document'])
+@bot.message_handler(content_types=['audio','video','document','voice'])
 @require_membership
 def media_handler(message):
     user = message.from_user
     uid = user.id
     database.add_or_update_user(uid, user.first_name or "", user.last_name or "", getattr(user, 'username', '') or "")
 
-    # identify file info
-    if message.content_type == 'audio':
-        file_id = message.audio.file_id
-        file_name = message.audio.title or f"audio_{int(time.time())}.mp3"
-        media_type = 'audio'
-    elif message.content_type == 'video':
-        file_id = message.video.file_id
-        file_name = message.video.file_name or f"video_{int(time.time())}.mp4"
-        media_type = 'video'
-    else:
-        file_id = message.document.file_id
-        file_name = message.document.file_name or f"file_{int(time.time())}"
-        media_type = 'document'
+    file_id, file_name, media_type = get_file_info(message)
+    if not file_id:
+        bot.reply_to(message, "❌ نوع فایل پشتیبانی نمی‌شود.")
+        return
 
     # download locally
     try:
@@ -85,11 +119,12 @@ def media_handler(message):
         bot.reply_to(message, "❌ خطا در دریافت فایل.")
         return
 
-    # finalize audio file if mp3
+    # finalize audio file if audio
     if media_type == 'audio':
         utils.finalize_audio_file(local_path, file_name)
+        add_channel_metadata(local_path, CHANNEL_ID)
 
-    # caption جذاب (تکرار "کانال" حذف شد)
+    # caption
     caption = f"🎵 {file_name}\n📌 {utils.make_channel_caption(CHANNEL_ID)}"
     database.add_post(local_path, file_id, safe_name, media_type, file_name, utils.user_display_name(user), uid)
 
@@ -121,8 +156,8 @@ def sc_handler(message):
         local_path, info = utils.download_with_ytdlp(url, outdir=DOWNLOAD_PATH)
         title = info.get('title', 'SoundCloud Track')
         utils.finalize_audio_file(local_path, title)
+        add_channel_metadata(local_path, CHANNEL_ID)  # <-- اضافه کردن اطلاعات کانال
 
-        # caption جذاب (تکرار "کانال" حذف شد)
         caption = f"🎵 {title}\n📌 {utils.make_channel_caption(CHANNEL_ID)}"
         with open(local_path, 'rb') as fh:
             bot.send_audio(CHANNEL_ID, fh, caption=caption, title=title)
@@ -133,7 +168,6 @@ def sc_handler(message):
         logger.exception("SoundCloud download error: %s", e)
         bot.reply_to(message, f"❌ دانلود ناموفق: {e}")
 
-# ------------------- START POLLING -------------------
 # ------------------- START WEBHOOK -------------------
 from flask import Flask, request
 
@@ -151,21 +185,14 @@ def webhook():
     else:
         return "Unsupported Media", 403
 
-
 @app.route('/')
 def home():
     return "Bot is running (Webhook active)."
-
 
 if __name__ == '__main__':
     try:
         bot.remove_webhook()
     except:
         pass
-
-    # ثبت Webhook
     bot.set_webhook(url=WEBHOOK_URL)
-
-    # اجرای سرور Flask روی Render
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
-
