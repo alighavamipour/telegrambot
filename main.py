@@ -4,7 +4,9 @@ from telebot import types
 from config import BOT_TOKEN, CHANNEL_ID, OWNER_ID, REQUIRED_CHANNELS, DOWNLOAD_PATH, DB_PATH
 import database, utils
 from functools import wraps
+from flask import Flask, request
 
+# ------------------- Logging -------------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -17,7 +19,7 @@ os.makedirs(DOWNLOAD_PATH, exist_ok=True)
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 
-# ------------------- DECORATOR: REQUIRE MEMBERSHIP -------------------
+# ------------------- Decorator: Require Membership -------------------
 def require_membership(func):
     @wraps(func)
     def wrapper(message, *args, **kwargs):
@@ -38,7 +40,7 @@ def require_membership(func):
         return func(message, *args, **kwargs)
     return wrapper
 
-# ------------------- START / HELP -------------------
+# ------------------- Start / Help -------------------
 @bot.message_handler(commands=['start','help'])
 def cmd_start(m):
     msg = (
@@ -52,7 +54,7 @@ def cmd_start(m):
     )
     bot.send_message(m.chat.id, msg)
 
-# ------------------- HELPERS -------------------
+# ------------------- Helpers -------------------
 def get_file_info(message):
     if message.content_type == 'audio':
         file_id = message.audio.file_id
@@ -82,7 +84,6 @@ def add_channel_metadata(file_path, channel_name):
     from mutagen.easyid3 import EasyID3
     from mutagen.id3 import ID3NoHeaderError
     try:
-        # فقط برای فایل‌های mp3 متادیتا اضافه می‌کنیم
         if not file_path.lower().endswith('.mp3'):
             return
         try:
@@ -95,21 +96,20 @@ def add_channel_metadata(file_path, channel_name):
         title = audio.get('title', [os.path.basename(file_path)])[0]
         audio['title'] = title
         audio['artist'] = channel_name
-        # استفاده از comment استاندارد EasyID3
         audio['comments'] = [f"Published via {channel_name}"]
         audio.save(file_path)
     except Exception as e:
         logger.warning("Cannot add metadata to audio file: %s", e)
 
 def extract_soundcloud_link(text):
-    import re
-    pattern = r'(https?://(?:www\.)?soundcloud\.com/[^\s]+)'
+    # پشتیبانی از همه زیردامنه‌های soundcloud
+    pattern = r'(https?://(?:\S+\.)?soundcloud\.com/[^\s]+)'
     match = re.search(pattern, text)
     if match:
         return match.group(1)
     return None
 
-# ------------------- MEDIA HANDLER -------------------
+# ------------------- Media Handler -------------------
 @bot.message_handler(content_types=['audio','video','document','voice'])
 @require_membership
 def media_handler(message):
@@ -128,7 +128,6 @@ def media_handler(message):
 
     processing_msg = bot.reply_to(message, "📥 فایل دریافت شد و در حال پردازش است… لطفاً صبر کنید.")
 
-    # نام امن
     safe_name = re.sub(r'[^A-Za-z0-9\.\-_ء-ي ]', '_', file_name or f"{media_type}_{int(time.time())}")
     local_path = os.path.join(DOWNLOAD_PATH, safe_name)
 
@@ -164,7 +163,7 @@ def media_handler(message):
         logger.exception("post to channel error: %s", e)
         bot.edit_message_text(f"❌ خطا در ارسال به کانال: {e}", processing_msg.chat.id, processing_msg.message_id)
 
-# ------------------- SOUNDCLOUD HANDLER -------------------
+# ------------------- SoundCloud Handler -------------------
 @bot.message_handler(func=lambda m: isinstance(m.text, str) and 'soundcloud.com' in m.text.lower())
 @require_membership
 def sc_handler(message):
@@ -195,7 +194,7 @@ def sc_handler(message):
         logger.exception("SoundCloud download error: %s", e)
         bot.edit_message_text(f"❌ دانلود ناموفق: {e}", processing_msg.chat.id, processing_msg.message_id)
 
-# ------------------- UNKNOWN MESSAGE HANDLER -------------------
+# ------------------- Unknown Message -------------------
 @bot.message_handler(func=lambda m: True)
 def unknown_message_handler(message):
     bot.reply_to(message,
@@ -203,9 +202,7 @@ def unknown_message_handler(message):
                  "📌 لطفاً یک فایل صوتی، ویدئو، داکیومنت یا لینک SoundCloud ارسال کنید.\n"
                  "برای راهنمایی بیشتر از /help استفاده کنید.")
 
-# ------------------- START WEBHOOK -------------------
-from flask import Flask, request
-
+# ------------------- Webhook -------------------
 app = Flask(__name__)
 WEBHOOK_URL = f"https://{os.getenv('RENDER_EXTERNAL_URL').replace('https://', '')}/webhook"
 
