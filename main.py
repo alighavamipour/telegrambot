@@ -141,7 +141,7 @@ def media_handler(message):
         return
 
     if media_type == 'audio':
-        utils.finalize_audio_file(local_path, file_name)
+        local_path = utils.finalize_audio_file(local_path, file_name)  # <-- اصلاح شد
         add_channel_metadata(local_path, CHANNEL_ID)
 
     caption = f"🎵 {file_name}\n📌 {utils.make_channel_caption(CHANNEL_ID)}"
@@ -178,7 +178,7 @@ def sc_handler(message):
     try:
         local_path, info = utils.download_with_ytdlp(link, outdir=DOWNLOAD_PATH)
         title = info.get('title', 'SoundCloud Track')
-        utils.finalize_audio_file(local_path, title)
+        local_path = utils.finalize_audio_file(local_path, title)  # <-- اصلاح شد
         add_channel_metadata(local_path, CHANNEL_ID)
 
         caption = f"🎵 {title}\n📌 {utils.make_channel_caption(CHANNEL_ID)}"
