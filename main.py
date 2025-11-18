@@ -124,13 +124,17 @@ def media_handler(message):
 
     processing_msg = bot.reply_to(message, "📥 فایل دریافت شد و در حال پردازش است… لطفاً صبر کنید.")
 
+    # ساخت نام امن حتی اگر فوروارد شده باشد
+    safe_name = re.sub(r'[^A-Za-z0-9\.\-_ء-ي ]', '_', file_name or f"{media_type}_{int(time.time())}")
+    local_path = os.path.join(DOWNLOAD_PATH, safe_name)
+
     try:
         finfo = bot.get_file(file_id)
         data = bot.download_file(finfo.file_path)
-        safe_name = re.sub(r'[^A-Za-z0-9\.\-_ء-ي ]', '_', file_name)
-        local_path = os.path.join(DOWNLOAD_PATH, safe_name)
         with open(local_path, 'wb') as f:
             f.write(data)
+        if not os.path.exists(local_path):
+            raise FileNotFoundError(f"{local_path} not found after download")
     except Exception as e:
         logger.exception("download error: %s", e)
         bot.edit_message_text("❌ خطا در دریافت فایل.", processing_msg.chat.id, processing_msg.message_id)
