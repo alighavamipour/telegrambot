@@ -132,7 +132,7 @@ def cb_quality(call):
 #############################
 
 app = Flask(__name__)
-WEBHOOK_URL = f"https://{os.getenv('RENDER_EXTERNAL_URL').replace('https://','')}/webhook"
+WEBHOOK_URL = f"{os.getenv('RENDER_EXTERNAL_URL')}/webhook"
 
 @app.route('/webhook',methods=['POST'])
 def wh():
