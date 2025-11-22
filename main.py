@@ -1,15 +1,19 @@
-import os, logging, time, re
+import os
+import logging
+import time
+import re
 import telebot
 from telebot import types
+from flask import Flask, request
 from config import BOT_TOKEN, CHANNEL_ID, OWNER_ID, REQUIRED_CHANNELS, DOWNLOAD_PATH, DB_PATH
 import database, utils
 from functools import wraps
-from flask import Flask, request
 
 # ------------------- Logging -------------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ------------------- Bot -------------------
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 database.init_db()
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
@@ -73,6 +77,7 @@ def build_quality_kb(link):
 
 # ------------------- Flask -------------------
 app = Flask(__name__)
+WEBHOOK_URL = f"{os.getenv('RENDER_EXTERNAL_URL')}/webhook"
 
 @app.route('/')
 def home():
@@ -89,26 +94,49 @@ def webhook():
         except Exception as e:
             logger.exception("Webhook processing failed: %s", e)
             return "Error", 500
-    else:
-        return "Unsupported Media", 403
+    return "Unsupported Media", 403
 
 # ------------------- Handlers -------------------
 @bot.message_handler(commands=['start','help'])
 def cmd_start(m):
-    msg = "سلام! 👋\n📌 قابلیت‌ها:\n- ارسال فایل، ویدئو، داکیومنت\n- دانلود از SoundCloud\n- دانلود از YouTube با انتخاب کیفیت\n⚠️ حتما عضو کانال باشید."
+    msg = (
+        "سلام! 👋\n📌 قابلیت‌ها:\n"
+        "- ارسال فایل، ویدئو، داکیومنت\n"
+        "- دانلود از SoundCloud\n"
+        "- دانلود از YouTube با انتخاب کیفیت\n⚠️ حتما عضو کانال باشید."
+    )
     bot.send_message(m.chat.id, msg)
 
 @bot.message_handler(content_types=['audio','video','document','voice'])
 @require_membership
 def media_handler(message):
-    # مشابه کد قبلی شما
-    pass  # Implement your media handler logic here
+    file_id, file_name, media_type, file_size = get_file_info(message)
+    if not file_id:
+        bot.reply_to(message, "❌ نوع فایل پشتیبانی نمی‌شود.")
+        return
+    if file_size and file_size > MAX_FILE_SIZE:
+        bot.reply_to(message, f"❌ حجم فایل بیشتر از 50MB است ({file_size/1024/1024:.2f}MB).")
+        return
+    try:
+        finfo = bot.get_file(file_id)
+        data = bot.download_file(finfo.file_path)
+        safe_name = re.sub(r'[^A-Za-z0-9\.\-_ء-ي ]','_', file_name)
+        local_path = os.path.join(DOWNLOAD_PATH, safe_name)
+        with open(local_path,'wb') as f: f.write(data)
+        bot.reply_to(message, f"✅ فایل دریافت و ذخیره شد: {safe_name}")
+    except Exception as e:
+        bot.reply_to(message, f"❌ خطا در دانلود فایل: {e}")
 
 @bot.message_handler(func=lambda m: isinstance(m.text,str) and 'soundcloud.com' in m.text.lower())
 @require_membership
 def sc_handler(message):
-    # مشابه کد قبلی شما
-    pass  # Implement your SoundCloud logic here
+    link = message.text.strip()
+    try:
+        filepath, info = utils.download_with_ytdlp(link, outdir=DOWNLOAD_PATH)
+        title = info.get('title','SoundCloud Track')
+        bot.reply_to(message, f"✅ فایل {title} دانلود شد.")
+    except Exception as e:
+        bot.reply_to(message, f"❌ خطا در دانلود SoundCloud: {e}")
 
 @bot.message_handler(func=lambda m: isinstance(m.text,str) and 'youtube.com' in m.text.lower())
 @require_membership
@@ -133,3 +161,12 @@ def cb_quality(call):
         bot.edit_message_text("✔ آماده شد!", call.message.chat.id, call.message.message_id)
     except Exception as e:
         bot.edit_message_text("❌ خطا: "+str(e), call.message.chat.id, call.message.message_id)
+
+# ------------------- Webhook Setup -------------------
+# ست خودکار وبهوک با هر deploy Render
+try:
+    bot.remove_webhook()
+    bot.set_webhook(WEBHOOK_URL)
+    logger.info(f"Webhook set to {WEBHOOK_URL}")
+except Exception as e:
+    logger.exception("Failed to set webhook: %s", e)
