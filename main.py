@@ -10,10 +10,7 @@ from flask import Flask, request
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN environment variable is required")
-
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None)
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 database.init_db()
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
 
@@ -23,14 +20,10 @@ MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 def require_membership(func):
     @wraps(func)
     def wrapper(message, *args, **kwargs):
-        uid = message.from_user.id
         try:
-            if not utils.check_membership(bot, uid):
+            if not utils.check_membership(bot, message.from_user.id):
                 kb = types.InlineKeyboardMarkup()
-                kb.add(types.InlineKeyboardButton(
-                    "👥 عضویت در کانال",
-                    url=f"https://t.me/{CHANNEL_ID.lstrip('@')}"
-                ))
+                kb.add(types.InlineKeyboardButton("👥 عضویت در کانال", url=f"https://t.me/{CHANNEL_ID.lstrip('@')}"))
                 bot.reply_to(message, "❌ برای استفاده از ربات حتماً باید عضو کانال شوید.", reply_markup=kb)
                 return
         except Exception as e:
@@ -47,10 +40,11 @@ def cmd_start(m):
         "سلام! 👋\n"
         "این ربات اختصاصی کانال وکس باکس است.\n\n"
         "📌 قابلیت‌ها:\n"
-        "🎵 دانلود و انتشار موسیقی از لینک‌ها (مثل SoundCloud)\n"
-        "🎬 ارسال و انتشار ویدئو و فایل‌ها به کانال\n"
+        "🎵 ارسال و انتشار موسیقی و فایل‌ها\n"
+        "🎬 ارسال ویدئو و داکیومنت\n"
         "📥 حتی فایل‌های فوروارد شده نیز قابل انتشار هستند\n"
-        "🎥 دانلود ویدئو و موسیقی از یوتیوب با انتخاب کیفیت\n\n"
+        "🎧 دانلود از SoundCloud\n"
+        "🎥 دانلود از YouTube با انتخاب کیفیت\n\n"
         "⚠️ حتما عضو کانال باشید تا بتوانید فایل ارسال کنید."
     )
     bot.send_message(m.chat.id, msg)
@@ -256,27 +250,23 @@ def unknown_message_handler(message):
                  "📌 لطفاً یک فایل صوتی، ویدئو، داکیومنت یا لینک SoundCloud/Youtube ارسال کنید.\n"
                  "برای راهنمایی بیشتر از /help استفاده کنید.")
 
-# ------------------- Webhook -------------------
+# ------------------- Flask App / Webhook -------------------
 app = Flask(__name__)
-WEBHOOK_URL = f"{os.getenv('RENDER_EXTERNAL_URL')}/webhook"
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
     if request.headers.get('content-type') == 'application/json':
-        json_str = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_str)
-        bot.process_new_updates([update])
-        return "OK", 200
+        try:
+            update_json = request.get_json(force=True)
+            update = telebot.types.Update.de_json(update_json)
+            bot.process_new_updates([update])
+            return "OK", 200
+        except Exception as e:
+            logger.exception("Webhook processing failed: %s", e)
+            return "Error", 500
     else:
         return "Unsupported Media", 403
 
 @app.route('/')
 def home():
     return "Bot is running (Webhook active)."
-
-# ------------------- Set Webhook on start -------------------
-try:
-    bot.remove_webhook()
-except:
-    pass
-bot.set_webhook(url=WEBHOOK_URL)
