@@ -1,4 +1,7 @@
-import os, logging, time, re
+import os
+import logging
+import time
+import re
 import telebot
 from telebot import types
 from config import BOT_TOKEN, CHANNEL_ID, OWNER_ID, REQUIRED_CHANNELS, DOWNLOAD_PATH, DB_PATH
@@ -10,9 +13,14 @@ from flask import Flask, request
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ------------------- Environment Check -------------------
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN environment variable is required")
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
+if not RENDER_EXTERNAL_URL:
+    raise RuntimeError("RENDER_EXTERNAL_URL environment variable is required")
 
+# ------------------- Bot Setup -------------------
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None)
 database.init_db()
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
@@ -43,6 +51,7 @@ def require_membership(func):
 # ------------------- Start / Help -------------------
 @bot.message_handler(commands=['start','help'])
 def cmd_start(m):
+    logger.info("User %s started the bot", m.from_user.id)
     msg = (
         "سلام! 👋\n"
         "این ربات اختصاصی کانال وکس باکس است.\n\n"
@@ -92,7 +101,6 @@ def add_channel_metadata(file_path, channel_name):
             audio = EasyID3()
             audio.save(file_path)
             audio = EasyID3(file_path)
-
         title = audio.get('title', [os.path.basename(file_path)])[0]
         audio['title'] = title
         audio['artist'] = channel_name
@@ -102,7 +110,6 @@ def add_channel_metadata(file_path, channel_name):
         logger.warning("Cannot add metadata to audio file: %s", e)
 
 def extract_soundcloud_link(text):
-    # پشتیبانی از همه زیردامنه‌های soundcloud
     pattern = r'(https?://(?:\S+\.)?soundcloud\.com/[^\s]+)'
     match = re.search(pattern, text)
     if match:
@@ -113,6 +120,7 @@ def extract_soundcloud_link(text):
 @bot.message_handler(content_types=['audio','video','document','voice'])
 @require_membership
 def media_handler(message):
+    logger.info("Media received: %s from %s", message.content_type, message.from_user.id)
     user = message.from_user
     uid = user.id
     database.add_or_update_user(uid, user.first_name or "", user.last_name or "", getattr(user, 'username', '') or "")
@@ -139,7 +147,7 @@ def media_handler(message):
         if not os.path.exists(local_path):
             raise FileNotFoundError(f"{local_path} not found after download")
     except Exception as e:
-        logger.exception("download error: %s", e)
+        logger.exception("Download error: %s", e)
         bot.edit_message_text("❌ خطا در دریافت فایل.", processing_msg.chat.id, processing_msg.message_id)
         return
 
@@ -160,13 +168,14 @@ def media_handler(message):
                 bot.send_document(CHANNEL_ID, fh, caption=caption)
         bot.edit_message_text(f"✅ فایل شما با موفقیت در کانال منتشر شد.\n📌 برای مشاهده به کانال مراجعه کنید.", processing_msg.chat.id, processing_msg.message_id)
     except Exception as e:
-        logger.exception("post to channel error: %s", e)
+        logger.exception("Post to channel error: %s", e)
         bot.edit_message_text(f"❌ خطا در ارسال به کانال: {e}", processing_msg.chat.id, processing_msg.message_id)
 
 # ------------------- SoundCloud Handler -------------------
 @bot.message_handler(func=lambda m: isinstance(m.text, str) and 'soundcloud.com' in m.text.lower())
 @require_membership
 def sc_handler(message):
+    logger.info("SoundCloud link received from %s", message.from_user.id)
     user = message.from_user
     uid = user.id
     database.add_or_update_user(uid, user.first_name or "", user.last_name or "", getattr(user, 'username', '') or "")
@@ -197,6 +206,7 @@ def sc_handler(message):
 # ------------------- Unknown Message -------------------
 @bot.message_handler(func=lambda m: True)
 def unknown_message_handler(message):
+    logger.info("Unknown message from %s", message.from_user.id)
     bot.reply_to(message,
                  "❌ ربات این پیام را نمی‌شناسد.\n\n"
                  "📌 لطفاً یک فایل صوتی، ویدئو، داکیومنت یا لینک SoundCloud ارسال کنید.\n"
@@ -204,13 +214,14 @@ def unknown_message_handler(message):
 
 # ------------------- Webhook -------------------
 app = Flask(__name__)
-WEBHOOK_URL = f"https://{os.getenv('RENDER_EXTERNAL_URL').replace('https://', '')}/webhook"
+WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}/webhook"
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
     if request.headers.get('content-type') == 'application/json':
         json_str = request.get_data().decode('utf-8')
         update = telebot.types.Update.de_json(json_str)
+        logger.info("Webhook update received: %s", update)
         bot.process_new_updates([update])
         return "OK", 200
     else:
@@ -223,7 +234,8 @@ def home():
 if __name__ == '__main__':
     try:
         bot.remove_webhook()
-    except:
-        pass
+    except Exception as e:
+        logger.warning("Remove webhook failed: %s", e)
     bot.set_webhook(url=WEBHOOK_URL)
+    logger.info("Webhook set to %s", WEBHOOK_URL)
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
