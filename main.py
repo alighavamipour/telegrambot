@@ -1,13 +1,10 @@
-import os
-import logging
-import time
-import re
+import os, re, logging, time
 import telebot
 from telebot import types
 from flask import Flask, request
-from config import BOT_TOKEN, CHANNEL_ID, OWNER_ID, REQUIRED_CHANNELS, DOWNLOAD_PATH, DB_PATH
-import database, utils
 from functools import wraps
+from config import BOT_TOKEN, CHANNEL_ID, REQUIRED_CHANNELS, DOWNLOAD_PATH
+import utils, database
 
 # ------------------- Logging -------------------
 logging.basicConfig(level=logging.INFO)
@@ -17,7 +14,6 @@ logger = logging.getLogger(__name__)
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 database.init_db()
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
-
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 
 # ------------------- Decorator -------------------
@@ -27,8 +23,11 @@ def require_membership(func):
         try:
             if not utils.check_membership(bot, message.from_user.id):
                 kb = types.InlineKeyboardMarkup()
-                kb.add(types.InlineKeyboardButton("👥 عضویت در کانال", url=f"https://t.me/{CHANNEL_ID.lstrip('@')}"))
-                bot.reply_to(message, "❌ برای استفاده از ربات حتماً باید عضو کانال شوید.", reply_markup=kb)
+                kb.add(types.InlineKeyboardButton(
+                    "👥 عضویت در کانال",
+                    url=f"https://t.me/{CHANNEL_ID.lstrip('@')}"
+                ))
+                bot.reply_to(message, "❌ برای استفاده از ربات باید عضو کانال شوید.", reply_markup=kb)
                 return
         except Exception as e:
             logger.exception("Membership check failed: %s", e)
@@ -42,26 +41,22 @@ def get_file_info(message):
     if message.content_type == 'audio':
         file_id = message.audio.file_id
         file_name = message.audio.file_name or message.audio.title or f"audio_{int(time.time())}.mp3"
-        media_type = 'audio'
         file_size = getattr(message.audio, 'file_size', None)
     elif message.content_type == 'voice':
         file_id = message.voice.file_id
         file_name = f"voice_{int(time.time())}.ogg"
-        media_type = 'audio'
         file_size = getattr(message.voice, 'file_size', None)
     elif message.content_type == 'video':
         file_id = message.video.file_id
         file_name = message.video.file_name or f"video_{int(time.time())}.mp4"
-        media_type = 'video'
         file_size = getattr(message.video, 'file_size', None)
     elif message.content_type == 'document':
         file_id = message.document.file_id
         file_name = message.document.file_name or f"file_{int(time.time())}"
-        media_type = 'document'
         file_size = getattr(message.document, 'file_size', None)
     else:
-        return None, None, None, None
-    return file_id, file_name, media_type, file_size
+        return None, None, None
+    return file_id, file_name, file_size
 
 def build_quality_kb(link):
     kb = types.InlineKeyboardMarkup()
@@ -88,6 +83,7 @@ def webhook():
     if request.headers.get('content-type') == 'application/json':
         try:
             update_json = request.get_json(force=True)
+            logger.info("Webhook update received: %s", update_json)
             update = telebot.types.Update.de_json(update_json)
             bot.process_new_updates([update])
             return "OK", 200
@@ -110,7 +106,7 @@ def cmd_start(m):
 @bot.message_handler(content_types=['audio','video','document','voice'])
 @require_membership
 def media_handler(message):
-    file_id, file_name, media_type, file_size = get_file_info(message)
+    file_id, file_name, file_size = get_file_info(message)
     if not file_id:
         bot.reply_to(message, "❌ نوع فایل پشتیبانی نمی‌شود.")
         return
@@ -125,6 +121,7 @@ def media_handler(message):
         with open(local_path,'wb') as f: f.write(data)
         bot.reply_to(message, f"✅ فایل دریافت و ذخیره شد: {safe_name}")
     except Exception as e:
+        logger.exception("File download failed")
         bot.reply_to(message, f"❌ خطا در دانلود فایل: {e}")
 
 @bot.message_handler(func=lambda m: isinstance(m.text,str) and 'soundcloud.com' in m.text.lower())
@@ -132,10 +129,13 @@ def media_handler(message):
 def sc_handler(message):
     link = message.text.strip()
     try:
-        filepath, info = utils.download_with_ytdlp(link, outdir=DOWNLOAD_PATH)
+        filepath, info = utils.ytdlp_download(link, DOWNLOAD_PATH, audio_only=True)
         title = info.get('title','SoundCloud Track')
+        with open(filepath,'rb') as f:
+            bot.send_audio(message.chat.id,f,caption=title)
         bot.reply_to(message, f"✅ فایل {title} دانلود شد.")
     except Exception as e:
+        logger.exception("SoundCloud download failed")
         bot.reply_to(message, f"❌ خطا در دانلود SoundCloud: {e}")
 
 @bot.message_handler(func=lambda m: isinstance(m.text,str) and 'youtube.com' in m.text.lower())
@@ -160,10 +160,10 @@ def cb_quality(call):
                 bot.send_video(call.message.chat.id,f,caption=title)
         bot.edit_message_text("✔ آماده شد!", call.message.chat.id, call.message.message_id)
     except Exception as e:
+        logger.exception("YouTube download failed")
         bot.edit_message_text("❌ خطا: "+str(e), call.message.chat.id, call.message.message_id)
 
 # ------------------- Webhook Setup -------------------
-# ست خودکار وبهوک با هر deploy Render
 try:
     bot.remove_webhook()
     bot.set_webhook(WEBHOOK_URL)
