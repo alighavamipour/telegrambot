@@ -211,7 +211,7 @@ async def on_private_receive(c: Client, m: Message):
 
 # 2) Sniff/monitor source channels & groups (message handler for channels that user is member of)
 #    This will automatically get channel_post events because our client is a user and is member.
-@app.on_message(filters.chat_type.channels)
+@app.on_message(filters.channel)
 async def on_channel_post(c: Client, m: Message):
     # ignore posts from our own target channel to avoid loops
     chat = m.chat
