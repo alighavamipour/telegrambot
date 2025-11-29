@@ -62,7 +62,7 @@ app = Client(
     session_string=SESSION_STRING,
     api_id=API_ID,
     api_hash=API_HASH,
-    workdir="/tmp/pyro"
+    workdir="/tmp/pyro",
     plugins=dict(root="plugins")  # not used but reserved
 )
 
