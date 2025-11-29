@@ -3,13 +3,14 @@ import os
 import re
 import asyncio
 import logging
-import uuid
 import shutil
 from pathlib import Path
 from dotenv import load_dotenv
+import time
 
 from pyrogram import Client, filters
 from pyrogram.types import Message
+from pyrogram.raw.functions import Ping
 from yt_dlp import YoutubeDL
 from mutagen.easyid3 import EasyID3
 from mutagen.mp4 import MP4
@@ -17,12 +18,7 @@ from mutagen.oggvorbis import OggVorbis
 from mutagen import File as MutagenFile
 
 load_dotenv()
-# -------- FIX SYNC TIME (Required for Render) --------
-import time
-time.sleep(1)
-now = time.time()
-print("Time synced:", now)
-# ------------------------------------------------------
+
 # ---------------- CONFIG ----------------
 API_ID = int(os.environ.get("API_ID", "0"))
 API_HASH = os.environ.get("API_HASH", "")
@@ -41,7 +37,7 @@ if not SESSION_STRING:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("music-forwarder")
 
-# yt-dlp options (robust)
+# yt-dlp options
 YDL_OPTS = {
     "format": "bestaudio/best",
     "outtmpl": str(WORKDIR / "%(id)s.%(ext)s"),
@@ -56,24 +52,23 @@ YDL_OPTS = {
 RE_SOUNDCLOUD = re.compile(r'https?://(soundcloud\.com|snd\.sc)/\S+', re.I)
 RE_SPOTIFY = re.compile(r'(https?://open\.spotify\.com/track/\S+|spotify:track:\S+)', re.I)
 
-# Pyrogram client (user session) - will do sniffing + posting
+# Pyrogram client
 app = Client(
     name="user_session",
     session_string=SESSION_STRING,
     api_id=API_ID,
     api_hash=API_HASH,
     workdir="/tmp/pyro",
-    plugins=dict(root="plugins")  # not used but reserved
+    plugins=dict(root="plugins")
 )
 
-# optionally a bot client for DMs (welcome/help). We'll create a simple one if BOT_TOKEN is present
+# optionally a bot client
 bot = None
 if BOT_TOKEN:
     bot = Client("bot_session", bot_token=BOT_TOKEN)
 
 # -------- helpers --------
 def cleanup_dir():
-    import time
     now = time.time()
     for f in WORKDIR.iterdir():
         try:
@@ -84,7 +79,6 @@ def cleanup_dir():
                 shutil.rmtree(f)
         except Exception:
             pass
-
 
 def tag_audio_file(path: Path, artist: str, title: str, channel_tag: str):
     ext = path.suffix.lower()
@@ -136,10 +130,8 @@ def extract_artist_title_from_text(text: str, filename: str):
         if m:
             artist, title = m.group(1).strip(), m.group(2).strip()
             return artist, title
-        # fallback: whole text as title
         title = text.strip()
         return artist, title
-    # fallback: filename
     name = Path(filename).stem
     m = re.match(r'(.+?)\s*[-–—]\s*(.+)', name)
     if m:
@@ -163,19 +155,25 @@ async def send_to_target(path: Path, artist: str, title: str):
         caption = f"{title}\n\nکانال: {TARGET_CHANNEL}"
     else:
         caption = f"کانال: {TARGET_CHANNEL}"
-    # prefer send_audio to keep audio meta
     try:
         await app.send_audio(chat_id=TARGET_CHANNEL, audio=str(path), caption=caption)
     except Exception as e:
         logger.warning("send_audio failed (%s), trying send_document", e)
         await app.send_document(chat_id=TARGET_CHANNEL, document=str(path), caption=caption)
 
+# -------- Telegram time sync --------
+async def sync_telegram_time(app: Client):
+    try:
+        ping_id = int(time.time() * 2**32)
+        await app.send(Ping(ping_id=ping_id))
+        logger.info("Telegram time synced!")
+    except Exception as e:
+        logger.warning("Telegram time sync failed: %s", e)
+
 # -------- Handlers --------
 
-# 1) Handle incoming private messages to the *user account* (someone fwd file/link to your user)
 @app.on_message(filters.private & (filters.document | filters.audio | filters.voice | filters.text))
 async def on_private_receive(c: Client, m: Message):
-    # If link SoundCloud/Spotify -> download & post
     text = m.text or m.caption or ""
     if text:
         sc = RE_SOUNDCLOUD.search(text)
@@ -198,8 +196,6 @@ async def on_private_receive(c: Client, m: Message):
                 logger.exception("yt-dlp failed")
                 await m.reply_text(f"خطا در دانلود: {e}")
             return
-
-    # If user forwarded audio/document/voice
     if m.audio or m.document or m.voice:
         await m.reply_text("دریافت و آماده‌سازی برای پست...")
         try:
@@ -216,21 +212,14 @@ async def on_private_receive(c: Client, m: Message):
             await m.reply_text("خطا در پردازش فایل.")
         return
 
-# 2) Sniff/monitor source channels & groups (message handler for channels that user is member of)
-#    This will automatically get channel_post events because our client is a user and is member.
 @app.on_message(filters.channel)
 async def on_channel_post(c: Client, m: Message):
-    # ignore posts from our own target channel to avoid loops
     chat = m.chat
     if not chat:
         return
     try:
-        # Avoid reposting if origin is target channel
         if str(chat.id) == str(TARGET_CHANNEL) or (chat.username and chat.username.lower() == str(TARGET_CHANNEL).lstrip("@").lower()):
             return
-
-        # Cases:
-        # - If post contains a link to SoundCloud/Spotify -> download and post (case 1)
         text = m.text or m.caption or ""
         sc = RE_SOUNDCLOUD.search(text) if text else None
         sp = RE_SPOTIFY.search(text) if text else None
@@ -243,7 +232,6 @@ async def on_channel_post(c: Client, m: Message):
                 artist, title = extract_artist_title_from_text(m.caption or m.text or info.get('title',''), path.name)
                 artist = artist or info.get('artist') or info.get('uploader') or ""
                 title = title or info.get('title') or ""
-                # tag and post
                 tag_audio_file(path, artist, title, TARGET_CHANNEL)
                 await send_to_target(path, artist, title)
                 try: path.unlink()
@@ -251,8 +239,6 @@ async def on_channel_post(c: Client, m: Message):
             except Exception:
                 logger.exception("Failed to download/link from channel post")
             return
-
-        # - If post contains media (audio/document/voice/video with audio) -> download, retag, post
         if m.audio or m.document or m.voice or m.video:
             logger.info("Channel %s posted media; reposting to %s", chat.username or chat.title, TARGET_CHANNEL)
             try:
@@ -266,12 +252,9 @@ async def on_channel_post(c: Client, m: Message):
             except Exception:
                 logger.exception("Failed to download media from channel post")
             return
-
-        # else ignore (text-only posts)
     except Exception:
         logger.exception("on_channel_post general error")
 
-# 3) (Optional) a very small bot for welcome & help — respond when someone messages the bot (BOT_TOKEN must be set)
 if bot:
     @bot.on_message(filters.private & filters.command("start"))
     async def bot_start(_, m: Message):
@@ -287,14 +270,13 @@ if bot:
 
 # ---------- run ----------
 async def main():
-    # start both clients
     await app.start()
+    await sync_telegram_time(app)
     logger.info("User session started (sniffer).")
     if bot:
         await bot.start()
         logger.info("Bot session started (for welcome/help).")
-    # Keep running — run until manually stopped
-    # Use simple aiohttp healthcheck server so Render sees a listening port
+
     from aiohttp import web
 
     async def handle(request):
@@ -308,7 +290,6 @@ async def main():
     await site.start()
     logger.info("Health server started on port %s", PORT)
 
-    # sleep forever
     try:
         while True:
             await asyncio.sleep(3600)
