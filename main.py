@@ -17,7 +17,12 @@ from mutagen.oggvorbis import OggVorbis
 from mutagen import File as MutagenFile
 
 load_dotenv()
-
+# -------- FIX SYNC TIME (Required for Render) --------
+import time
+time.sleep(1)
+now = time.time()
+print("Time synced:", now)
+# ------------------------------------------------------
 # ---------------- CONFIG ----------------
 API_ID = int(os.environ.get("API_ID", "0"))
 API_HASH = os.environ.get("API_HASH", "")
@@ -57,7 +62,7 @@ app = Client(
     session_string=SESSION_STRING,
     api_id=API_ID,
     api_hash=API_HASH,
-    workdir=str(WORKDIR / "pyrogram_work"),
+    workdir="/tmp/pyro"
     plugins=dict(root="plugins")  # not used but reserved
 )
 
@@ -68,16 +73,18 @@ if BOT_TOKEN:
 
 # -------- helpers --------
 def cleanup_dir():
+    import time
+    now = time.time()
     for f in WORKDIR.iterdir():
         try:
             if f.is_file():
-                # keep files less than 24h only; remove older
-                if (f.stat().st_mtime + 24*3600) < os.time():
+                if f.stat().st_mtime + 24*3600 < now:
                     f.unlink()
             elif f.is_dir():
                 shutil.rmtree(f)
         except Exception:
             pass
+
 
 def tag_audio_file(path: Path, artist: str, title: str, channel_tag: str):
     ext = path.suffix.lower()
