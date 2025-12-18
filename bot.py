@@ -39,6 +39,11 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
+console = logging.StreamHandler()
+console.setLevel(logging.INFO)
+formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+console.setFormatter(formatter)
+logging.getLogger().addHandler(console)
 
 # =========================================================
 # 4. DATABASE
@@ -72,7 +77,8 @@ async def is_member(user_id, context):
     try:
         member = await context.bot.get_chat_member(CHANNEL_ID, user_id)
         return member.status in ["member", "administrator", "creator"]
-    except:
+    except Exception as e:
+        logging.exception("Error checking membership:")
         return False
 
 async def force_join(update, context):
@@ -120,6 +126,7 @@ async def audio_worker():
         queue.task_done()
 
 async def run_cmd(*cmd, progress_callback=None):
+    logging.info(f"Running command: {' '.join(cmd)}")
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -147,9 +154,13 @@ async def run_cmd(*cmd, progress_callback=None):
     return stdout.decode(), stderr.decode()
 
 async def process_audio(raw_path, final_path, original_name, progress_cb=None):
+    # تبدیل به mp3 قبل از رندر نهایی
+    temp_mp3 = raw_path + "_temp.mp3"
+    await run_cmd("ffmpeg", "-y", "-i", raw_path, "-vn", "-acodec", "libmp3lame", "-b:a", "320k", temp_mp3)
     await run_cmd(
         "ffmpeg",
-        "-i", raw_path,
+        "-y",
+        "-i", temp_mp3,
         "-i", COVER_PATH,
         "-map_metadata", "-1",
         "-map", "0:a", "-map", "1:v",
@@ -164,6 +175,7 @@ async def process_audio(raw_path, final_path, original_name, progress_cb=None):
         final_path,
         progress_callback=progress_cb
     )
+    os.remove(temp_mp3)
 
 async def parse_ffmpeg_progress(line, start_time, status_msg=None):
     match = re.search(r'time=(\d+:\d+:\d+\.\d+)', line)
@@ -204,6 +216,7 @@ async def handle_forwarded_audio(update, context):
 
     file = await audio.get_file()
     await file.download_to_drive(raw)
+    logging.info(f"Downloaded audio: {raw} ({os.path.getsize(raw)} bytes)")
 
     async def task():
         try:
@@ -308,7 +321,7 @@ def main():
     for _ in range(CONCURRENCY):
         loop.create_task(audio_worker())
 
-    # اجرا روی webhook (بدون asyncio.run)
+    # اجرا روی webhook
     app.run_webhook(
         listen="0.0.0.0",
         port=int(os.getenv("PORT", 10000)),
