@@ -1,5 +1,5 @@
 # =========================================================
-# bot.py - نسخه اصلاح شده با کنترل حجم و لینک دانلود مستقیم
+# bot.py - نسخه نهایی با کنترل حجم SoundCloud و اطلاع‌رسانی
 # =========================================================
 
 # =========================================================
@@ -159,9 +159,9 @@ async def run_cmd(*cmd, progress_callback=None):
     return stdout.decode(), stderr.decode()
 
 # =========================================================
-# 9. PROCESS AUDIO (OPTIMIZED)
+# 9. PROCESS AUDIO
 # =========================================================
-async def process_audio(raw_path, final_path, original_name, progress_cb=None):
+async def process_audio(raw_path, final_path, original_name, bitrate="320k", progress_cb=None):
     await run_cmd(
         "ffmpeg",
         "-y",
@@ -170,7 +170,7 @@ async def process_audio(raw_path, final_path, original_name, progress_cb=None):
         "-map_metadata", "-1",
         "-map", "0:a", "-map", "1:v",
         "-c:a", "libmp3lame",
-        "-b:a", "320k",
+        "-b:a", bitrate,
         "-c:v", "mjpeg",
         "-id3v2_version", "3",
         "-metadata", f"title={original_name}",
@@ -203,7 +203,7 @@ async def parse_ffmpeg_progress(line, start_time, status_msg=None):
                     pass
 
 # =========================================================
-# 10. HANDLE FORWARDED AUDIO (با چک حجم)
+# 10. HANDLE FORWARDED AUDIO
 # =========================================================
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 
@@ -219,7 +219,7 @@ async def handle_forwarded_audio(update, context):
         )
         return
 
-    status_msg = await update.message.reply_text("📥 فایل شما دریافت شد، در حال پردازش...")
+    status_msg = await update.message.reply_text(f"📥 فایل دریافت شد: {audio.file_name}, در حال پردازش...")
 
     original_name = clean_filename(audio.file_name or "music.mp3")
     uid = uuid4().hex
@@ -233,14 +233,14 @@ async def handle_forwarded_audio(update, context):
     async def task():
         try:
             await process_audio(raw, final, original_name,
-                                lambda line, start: parse_ffmpeg_progress(line, start, status_msg))
+                                progress_cb=lambda line, start: parse_ffmpeg_progress(line, start, status_msg))
             caption = f"🎵 {original_name}\n🔗 @{CHANNEL_USERNAME}"
             with open(final, "rb") as f:
                 await context.bot.send_audio(chat_id=CHANNEL_ID, audio=f, filename=original_name, caption=caption)
-            await status_msg.edit_text("✅ فایل شما با موفقیت منتشر شد 🎉")
+            await status_msg.edit_text("✅ فایل با موفقیت منتشر شد 🎉")
         except Exception as e:
             logging.exception("Error processing forwarded audio:")
-            await status_msg.edit_text("❌ خطا در پردازش فایل شما!")
+            await status_msg.edit_text("❌ خطا در پردازش فایل!")
 
     await queue.put(task)
 
@@ -258,12 +258,12 @@ async def handle_soundcloud(update, context):
     if not match:
         return
 
-    status_msg = await update.message.reply_text("⏳ در حال دانلود از SoundCloud، لطفاً صبور باشید...")
-
     uid = uuid4().hex
     raw = os.path.join(DOWNLOAD_DIR, f"{uid}.mp3")
     final = os.path.join(DOWNLOAD_DIR, f"{uid}_final.mp3")
     original_name = f"{uid}.mp3"
+
+    status_msg = await update.message.reply_text(f"📥 دریافت فایل SoundCloud ({original_name}) آغاز شد...")
 
     async def task():
         try:
@@ -271,15 +271,24 @@ async def handle_soundcloud(update, context):
                 "yt-dlp", "-x", "--audio-format", "mp3", "-o", raw, match.group(1),
                 progress_callback=lambda line, start: parse_ffmpeg_progress(line, start, status_msg)
             )
-            if os.path.getsize(raw) > MAX_FILE_SIZE:
-                await status_msg.edit_text("❌ حجم فایل بیش از 50 مگابایت است و نمی‌توان آن را پردازش کرد.")
-                return
+
+            file_size = os.path.getsize(raw)
+            bitrate = "320k"
+            if file_size > MAX_FILE_SIZE:
+                await status_msg.edit_text(
+                    f"⚠️ فایل دانلود شده ({file_size / (1024*1024):.2f}MB) بزرگتر از 50MB است.\n"
+                    "🔽 کاهش بیت‌ریت به 128k برای انتشار..."
+                )
+                bitrate = "128k"
 
             await process_audio(raw, final, original_name,
-                                lambda line, start: parse_ffmpeg_progress(line, start, status_msg))
+                                bitrate=bitrate,
+                                progress_cb=lambda line, start: parse_ffmpeg_progress(line, start, status_msg))
+
             caption = f"🎵 {original_name}\n🔗 @{CHANNEL_USERNAME}"
             with open(final, "rb") as f:
                 await context.bot.send_audio(chat_id=CHANNEL_ID, audio=f, filename=original_name, caption=caption)
+
             await status_msg.edit_text("✅ دانلود و انتشار موزیک با موفقیت انجام شد 🎉")
         except Exception as e:
             logging.exception("Error processing SoundCloud audio:")
@@ -291,7 +300,6 @@ async def handle_soundcloud(update, context):
 # 12. HANDLE DIRECT DOWNLOAD LINKS
 # =========================================================
 URL_REGEX = re.compile(r"https?://[^\s]+")
-
 async def handle_download_link(update, context):
     save_user(update.message.from_user.id)
     if not await is_member(update.message.from_user.id, context):
@@ -302,12 +310,12 @@ async def handle_download_link(update, context):
         return
 
     url = match.group(0)
-    status_msg = await update.message.reply_text("⏳ در حال دانلود فایل، لطفاً صبور باشید...")
-
     uid = uuid4().hex
     raw = os.path.join(DOWNLOAD_DIR, f"{uid}.mp3")
     final = os.path.join(DOWNLOAD_DIR, f"{uid}_final.mp3")
     original_name = f"{uid}.mp3"
+
+    status_msg = await update.message.reply_text(f"📥 دریافت فایل از لینک ({url}) آغاز شد...")
 
     async def task():
         try:
@@ -317,11 +325,11 @@ async def handle_download_link(update, context):
                 return
 
             await process_audio(raw, final, original_name,
-                                lambda line, start: parse_ffmpeg_progress(line, start, status_msg))
+                                progress_cb=lambda line, start: parse_ffmpeg_progress(line, start, status_msg))
             caption = f"🎵 {original_name}\n🔗 @{CHANNEL_USERNAME}"
             with open(final, "rb") as f:
                 await context.bot.send_audio(chat_id=CHANNEL_ID, audio=f, filename=original_name, caption=caption)
-            await status_msg.edit_text("✅ فایل شما با موفقیت منتشر شد 🎉")
+            await status_msg.edit_text("✅ فایل با موفقیت منتشر شد 🎉")
         except Exception as e:
             logging.exception("Error processing download link:")
             await status_msg.edit_text("❌ خطا در دانلود یا پردازش فایل!")
