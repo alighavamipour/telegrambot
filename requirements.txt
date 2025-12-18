@@ -1,6 +1,2 @@
-pyrogram==2.0.70
-tgcrypto==1.2.5
+python-telegram-bot[webhooks]==20.7
 yt-dlp
-mutagen==1.46.0
-aiohttp==3.8.4
-python-dotenv==1.0.0
