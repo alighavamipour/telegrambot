@@ -297,18 +297,15 @@ def main():
     app.add_handler(MessageHandler(filters.AUDIO | filters.Document.AUDIO, handle_forwarded_audio))
     app.add_handler(MessageHandler(filters.ALL, fallback))
 
-    async def runner():
-        # راه‌اندازی workerها
-        for _ in range(CONCURRENCY):
-            asyncio.create_task(audio_worker())
-        # شروع webhook
-        await app.run_webhook(
-            listen="0.0.0.0",
-            port=int(os.getenv("PORT", 10000)),
-            webhook_url=BASE_URL
-        )
-
-    asyncio.run(runner())
+    # اجرا روی loop موجود
+    loop = asyncio.get_event_loop()
+    for _ in range(CONCURRENCY):
+        loop.create_task(audio_worker())
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.getenv("PORT", 10000)),
+        webhook_url=BASE_URL
+    )
 
 if __name__ == "__main__":
     main()
