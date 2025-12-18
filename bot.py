@@ -123,7 +123,8 @@ async def audio_worker():
             await task()
         except Exception as e:
             logging.exception("Error in audio_worker task:")
-        queue.task_done()
+        finally:
+            queue.task_done()
 
 async def run_cmd(*cmd, progress_callback=None):
     logging.info(f"Running command: {' '.join(cmd)}")
@@ -154,7 +155,6 @@ async def run_cmd(*cmd, progress_callback=None):
     return stdout.decode(), stderr.decode()
 
 async def process_audio(raw_path, final_path, original_name, progress_cb=None):
-    # تبدیل به mp3 قبل از رندر نهایی
     temp_mp3 = raw_path + "_temp.mp3"
     await run_cmd("ffmpeg", "-y", "-i", raw_path, "-vn", "-acodec", "libmp3lame", "-b:a", "320k", temp_mp3)
     await run_cmd(
@@ -294,7 +294,7 @@ async def broadcast(update, context):
         try:
             await context.bot.send_message(uid, text)
         except:
-            pass
+            continue
     await update.message.reply_text("✅ پیام شما برای همه کاربران ارسال شد.")
 
 # =========================================================
