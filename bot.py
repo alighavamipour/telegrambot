@@ -62,7 +62,6 @@ def clean_filename(name: str) -> str:
     return name.strip() or "music.mp3"
 
 def parse_time(time_str: str) -> float:
-    """Convert HH:MM:SS.xx to seconds"""
     parts = time_str.split(":")
     return float(parts[0])*3600 + float(parts[1])*60 + float(parts[2])
 
@@ -169,10 +168,14 @@ async def parse_ffmpeg_progress(line, start_time, status_msg=None):
             speed = current_sec / elapsed
             remaining = (current_sec / speed) - elapsed
             eta = str(timedelta(seconds=int(remaining)))
+            percent = min(100, int((current_sec / (current_sec+remaining))*100))
             if status_msg:
                 try:
-                    await status_msg.edit_text(f"⏳ پردازش در حال انجام است...\n"
-                                               f"🕒 زمان تقریبی باقی‌مانده: {eta}")
+                    await status_msg.edit_text(
+                        f"⏳ پردازش در حال انجام است...\n"
+                        f"📊 پیشرفت: {percent}%\n"
+                        f"🕒 زمان تقریبی باقی‌مانده: {eta}"
+                    )
                 except:
                     pass
 
@@ -294,16 +297,18 @@ def main():
     app.add_handler(MessageHandler(filters.AUDIO | filters.Document.AUDIO, handle_forwarded_audio))
     app.add_handler(MessageHandler(filters.ALL, fallback))
 
-    async def start_workers(app):
+    async def runner():
+        # راه‌اندازی workerها
         for _ in range(CONCURRENCY):
             asyncio.create_task(audio_worker())
+        # شروع webhook
+        await app.run_webhook(
+            listen="0.0.0.0",
+            port=int(os.getenv("PORT", 10000)),
+            webhook_url=BASE_URL
+        )
 
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=int(os.getenv("PORT", 10000)),
-        webhook_url=BASE_URL,
-        post_init=start_workers
-    )
+    asyncio.run(runner())
 
 if __name__ == "__main__":
     main()
