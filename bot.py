@@ -82,4 +82,170 @@ async def force_join(update, context):
 async def check_join_callback(update, context):
     q = update.callback_query
     await q.answer()
-    if await is_member(q.from_user.id, co
+    if await is_member(q.from_user.id, context):
+        await q.edit_message_text("✅ تایید شد، حالا موزیک بفرست 🎵")
+    else:
+        await q.answer("❌ هنوز عضو نشدی", show_alert=True)
+
+# =========================================================
+# 7. START
+# =========================================================
+async def start(update, context):
+    save_user(update.message.from_user.id)
+    if not await is_member(update.message.from_user.id, context):
+        return await force_join(update, context)
+
+    await update.message.reply_text(
+        "🎧 لینک SoundCloud بفرست\n"
+        "🎵 یا موزیک رو فوروارد کن\n\n"
+        "📥 خروجی تمیز داخل کانال منتشر میشه"
+    )
+
+# =========================================================
+# 8. SOUNDCLOUD HANDLER
+# =========================================================
+SC_REGEX = re.compile(r"(soundcloud\.com\/[^\s]+)")
+
+async def handle_soundcloud(update, context):
+    save_user(update.message.from_user.id)
+    if not await is_member(update.message.from_user.id, context):
+        return await force_join(update, context)
+
+    match = SC_REGEX.search(update.message.text or "")
+    if not match:
+        return
+
+    status = await update.message.reply_text("⏳ در حال دانلود...")
+
+    try:
+        uid = uuid4().hex
+        raw = f"{DOWNLOAD_DIR}/{uid}.mp3"
+        final = f"{DOWNLOAD_DIR}/{uid}_final.mp3"
+
+        subprocess.run([
+            "yt-dlp", "-x", "--audio-format", "mp3",
+            "-o", raw, match.group(1)
+        ], check=True)
+
+        subprocess.run([
+            "ffmpeg",
+            "-i", raw, "-i", COVER_PATH,
+            "-map_metadata", "-1",
+            "-map", "0:a", "-map", "1:v",
+            "-c:a", "copy", "-c:v", "mjpeg",
+            "-id3v2_version", "3",
+            "-metadata", f"artist=@{CHANNEL_USERNAME}",
+            "-metadata", f"album=@{CHANNEL_USERNAME}",
+            "-metadata", f"comment=@{CHANNEL_USERNAME}",
+            final
+        ], check=True)
+
+        name = os.path.basename(raw)
+        caption = f"🎵 {name}\n🔗 @{CHANNEL_USERNAME}"
+
+        await context.bot.send_audio(
+            chat_id=CHANNEL_ID,
+            audio=open(final, "rb"),
+            filename=name,
+            caption=caption
+        )
+
+        await status.edit_text("✅ منتشر شد، برو کانال دانلود کن")
+
+    except Exception as e:
+        logging.exception(e)
+        await status.edit_text("❌ خطا")
+
+# =========================================================
+# 9. FORWARDED AUDIO HANDLER
+# =========================================================
+async def handle_forwarded_audio(update, context):
+    save_user(update.message.from_user.id)
+    if not await is_member(update.message.from_user.id, context):
+        return await force_join(update, context)
+
+    status = await update.message.reply_text("🎧 فایل دریافت شد...")
+
+    try:
+        audio = update.message.audio or update.message.document
+        original_name = clean_filename(audio.file_name or "music.mp3")
+
+        uid = uuid4().hex
+        raw = f"{DOWNLOAD_DIR}/{uid}.mp3"
+        final = f"{DOWNLOAD_DIR}/{uid}_final.mp3"
+
+        await audio.get_file().download_to_drive(raw)
+
+        subprocess.run([
+            "ffmpeg",
+            "-i", raw, "-i", COVER_PATH,
+            "-map_metadata", "-1",
+            "-map", "0:a", "-map", "1:v",
+            "-c:a", "copy", "-c:v", "mjpeg",
+            "-id3v2_version", "3",
+            "-metadata", f"artist=@{CHANNEL_USERNAME}",
+            "-metadata", f"album=@{CHANNEL_USERNAME}",
+            "-metadata", f"comment=@{CHANNEL_USERNAME}",
+            final
+        ], check=True)
+
+        caption = f"🎵 {original_name}\n🔗 @{CHANNEL_USERNAME}"
+
+        await context.bot.send_audio(
+            chat_id=CHANNEL_ID,
+            audio=open(final, "rb"),
+            filename=original_name,
+            caption=caption
+        )
+
+        await status.edit_text("✅ با موفقیت منتشر شد")
+
+    except Exception as e:
+        logging.exception(e)
+        await status.edit_text("❌ خطا در پردازش")
+
+# =========================================================
+# 10. BROADCAST
+# =========================================================
+async def broadcast(update, context):
+    if update.message.from_user.id != ADMIN_ID:
+        return
+    text = " ".join(context.args)
+    if not text:
+        return await update.message.reply_text("❗ متن بده")
+
+    for (uid,) in cur.execute("SELECT user_id FROM users"):
+        try:
+            await context.bot.send_message(uid, text)
+        except:
+            pass
+
+    await update.message.reply_text("✅ ارسال شد")
+
+# =========================================================
+# 11. FALLBACK
+# =========================================================
+async def fallback(update, context):
+    await update.message.reply_text("🎵 فقط موزیک یا لینک SoundCloud بفرست")
+
+# =========================================================
+# 12. MAIN
+# =========================================================
+def main():
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("broadcast", broadcast))
+    app.add_handler(CallbackQueryHandler(check_join_callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_soundcloud))
+    app.add_handler(MessageHandler(filters.AUDIO | filters.Document.AUDIO, handle_forwarded_audio))
+    app.add_handler(MessageHandler(filters.ALL, fallback))
+
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.getenv("PORT", 10000)),
+        webhook_url=BASE_URL
+    )
+
+if __name__ == "__main__":
+    main()
