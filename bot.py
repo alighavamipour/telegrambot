@@ -135,7 +135,7 @@ async def run_cmd(*cmd, progress_callback=None):
             break
         decoded = line.decode(errors="ignore").strip()
         stderr_lines.append(decoded)
-        logging.info(decoded)  # لاگ کردن کامل خطاها و پروگرس
+        logging.info(decoded)
         if progress_callback:
             await progress_callback(decoded, start_time)
 
@@ -293,7 +293,7 @@ async def fallback(update, context):
 # =========================================================
 # 13. MAIN
 # =========================================================
-async def main():
+def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -304,15 +304,16 @@ async def main():
     app.add_handler(MessageHandler(filters.ALL, fallback))
 
     # اجرای workerها
+    loop = asyncio.get_event_loop()
     for _ in range(CONCURRENCY):
-        asyncio.create_task(audio_worker())
+        loop.create_task(audio_worker())
 
-    # اجرا روی webhook
-    await app.run_webhook(
+    # اجرا روی webhook (بدون asyncio.run)
+    app.run_webhook(
         listen="0.0.0.0",
         port=int(os.getenv("PORT", 10000)),
         webhook_url=BASE_URL
     )
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
