@@ -64,7 +64,6 @@ def clean_filename(name: str) -> str:
     return name.strip() or "music.mp3"
 
 async def run_cmd(*cmd, progress_callback=None):
-    """Run subprocess asynchronously with optional progress callback"""
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -128,7 +127,7 @@ async def start(update, context):
 queue = asyncio.Queue()
 CONCURRENCY = 3
 
-async def audio_worker(context):
+async def audio_worker():
     while True:
         task = await queue.get()
         try:
@@ -157,20 +156,17 @@ async def process_audio(raw_path, final_path, original_name, progress_cb=None):
     )
 
 async def parse_ffmpeg_progress(line, start_time):
-    """Parse ffmpeg stderr and update progress"""
     time_match = re.search(r'time=(\d+:\d+:\d+.\d+)', line)
     if time_match:
         current_time = time_match.group(1)
-        # می‌توان زمان تقریبی باقی‌مانده را هم محاسبه کرد
-        # (در این نسخه ساده فقط زمان جاری نشان داده می‌شود)
-        pass
+        # اینجا می‌توان زمان تقریبی باقی‌مانده هم محاسبه کرد
 
 async def handle_forwarded_audio(update, context):
     save_user(update.message.from_user.id)
     if not await is_member(update.message.from_user.id, context):
         return await force_join(update, context)
 
-    status = await update.message.reply_text("📥 فایل شما دریافت شد، در حال پردازش هستیم...")
+    status = await update.message.reply_text("📥 فایل شما دریافت شد، در حال پردازش...")
 
     audio = update.message.audio or update.message.document
     original_name = clean_filename(audio.file_name or "music.mp3")
@@ -211,7 +207,7 @@ async def handle_soundcloud(update, context):
     if not match:
         return
 
-    status = await update.message.reply_text("⏳ در حال دانلود از SoundCloud، لطفاً کمی صبور باشید...")
+    status = await update.message.reply_text("⏳ در حال دانلود از SoundCloud، لطفاً صبور باشید...")
 
     uid = uuid4().hex
     raw = f"{DOWNLOAD_DIR}/{uid}.mp3"
@@ -272,16 +268,14 @@ def main():
     app.add_handler(MessageHandler(filters.AUDIO | filters.Document.AUDIO, handle_forwarded_audio))
     app.add_handler(MessageHandler(filters.ALL, fallback))
 
-    # راه‌اندازی workerها قبل از webhook
-    async def start_workers(app):
-        for _ in range(CONCURRENCY):
-            asyncio.create_task(audio_worker(app))
+    # راه‌اندازی workerها
+    for _ in range(CONCURRENCY):
+        asyncio.create_task(audio_worker())
 
     app.run_webhook(
         listen="0.0.0.0",
         port=int(os.getenv("PORT", 10000)),
-        webhook_url=BASE_URL,
-        post_init=start_workers
+        webhook_url=BASE_URL
     )
 
 if __name__ == "__main__":
