@@ -137,6 +137,7 @@ async def handle_soundcloud(update, context):
             "-metadata", f"artist=@{CHANNEL_USERNAME}",
             "-metadata", f"album=@{CHANNEL_USERNAME}",
             "-metadata", f"comment=@{CHANNEL_USERNAME}",
+            "-metadata", f"title={original_name}",
             final
         ], check=True)
 
