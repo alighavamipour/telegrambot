@@ -116,7 +116,7 @@ async def audio_worker():
         try:
             await task()
         except Exception as e:
-            logging.exception(e)
+            logging.exception("Error in audio_worker task:")
         queue.task_done()
 
 async def run_cmd(*cmd, progress_callback=None):
@@ -127,17 +127,23 @@ async def run_cmd(*cmd, progress_callback=None):
     )
 
     start_time = datetime.now()
+    stderr_lines = []
+
     while True:
         line = await proc.stderr.readline()
         if not line:
             break
         decoded = line.decode(errors="ignore").strip()
+        stderr_lines.append(decoded)
+        logging.info(decoded)  # لاگ کردن کامل خطاها و پروگرس
         if progress_callback:
             await progress_callback(decoded, start_time)
 
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
-        raise Exception(f"Command {cmd} failed: {stderr.decode()}")
+        error_msg = stderr.decode() or "\n".join(stderr_lines)
+        logging.error(f"Command {cmd} failed: {error_msg}")
+        raise Exception(f"Command {cmd} failed: {error_msg}")
     return stdout.decode(), stderr.decode()
 
 async def process_audio(raw_path, final_path, original_name, progress_cb=None):
@@ -193,8 +199,8 @@ async def handle_forwarded_audio(update, context):
     original_name = clean_filename(audio.file_name or "music.mp3")
 
     uid = uuid4().hex
-    raw = f"{DOWNLOAD_DIR}/{uid}.mp3"
-    final = f"{DOWNLOAD_DIR}/{uid}_final.mp3"
+    raw = os.path.join(DOWNLOAD_DIR, f"{uid}.mp3")
+    final = os.path.join(DOWNLOAD_DIR, f"{uid}_final.mp3")
 
     file = await audio.get_file()
     await file.download_to_drive(raw)
@@ -213,7 +219,7 @@ async def handle_forwarded_audio(update, context):
                 )
             await status_msg.edit_text("✅ فایل شما با موفقیت منتشر شد 🎉")
         except Exception as e:
-            logging.exception(e)
+            logging.exception("Error processing forwarded audio:")
             await status_msg.edit_text("❌ خطا در پردازش فایل شما!")
 
     await queue.put(task)
@@ -235,8 +241,8 @@ async def handle_soundcloud(update, context):
     status_msg = await update.message.reply_text("⏳ در حال دانلود از SoundCloud، لطفاً صبور باشید...")
 
     uid = uuid4().hex
-    raw = f"{DOWNLOAD_DIR}/{uid}.mp3"
-    final = f"{DOWNLOAD_DIR}/{uid}_final.mp3"
+    raw = os.path.join(DOWNLOAD_DIR, f"{uid}.mp3")
+    final = os.path.join(DOWNLOAD_DIR, f"{uid}_final.mp3")
     original_name = f"{uid}.mp3"
 
     async def task():
@@ -257,7 +263,7 @@ async def handle_soundcloud(update, context):
                 )
             await status_msg.edit_text("✅ دانلود و انتشار موزیک با موفقیت انجام شد 🎉")
         except Exception as e:
-            logging.exception(e)
+            logging.exception("Error processing SoundCloud audio:")
             await status_msg.edit_text("❌ خطا در دانلود یا پردازش فایل!")
 
     await queue.put(task)
@@ -287,7 +293,7 @@ async def fallback(update, context):
 # =========================================================
 # 13. MAIN
 # =========================================================
-def main():
+async def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -297,15 +303,16 @@ def main():
     app.add_handler(MessageHandler(filters.AUDIO | filters.Document.AUDIO, handle_forwarded_audio))
     app.add_handler(MessageHandler(filters.ALL, fallback))
 
-    # اجرا روی loop موجود
-    loop = asyncio.get_event_loop()
+    # اجرای workerها
     for _ in range(CONCURRENCY):
-        loop.create_task(audio_worker())
-    app.run_webhook(
+        asyncio.create_task(audio_worker())
+
+    # اجرا روی webhook
+    await app.run_webhook(
         listen="0.0.0.0",
         port=int(os.getenv("PORT", 10000)),
         webhook_url=BASE_URL
     )
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
