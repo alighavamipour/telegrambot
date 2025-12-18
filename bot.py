@@ -121,6 +121,7 @@ async def handle_soundcloud(update, context):
         uid = uuid4().hex
         raw = f"{DOWNLOAD_DIR}/{uid}.mp3"
         final = f"{DOWNLOAD_DIR}/{uid}_final.mp3"
+        original_name = f"{uid}.mp3"
 
         subprocess.run([
             "yt-dlp", "-x", "--audio-format", "mp3",
@@ -132,22 +133,23 @@ async def handle_soundcloud(update, context):
             "-i", raw, "-i", COVER_PATH,
             "-map_metadata", "-1",
             "-map", "0:a", "-map", "1:v",
-            "-c:a", "copy", "-c:v", "mjpeg",
+            "-c:a", "libmp3lame",    # encode audio to apply metadata
+            "-b:a", "320k",
+            "-c:v", "mjpeg",
             "-id3v2_version", "3",
+            "-metadata", f"title={original_name}",
             "-metadata", f"artist=@{CHANNEL_USERNAME}",
             "-metadata", f"album=@{CHANNEL_USERNAME}",
             "-metadata", f"comment=@{CHANNEL_USERNAME}",
-            "-metadata", f"title={original_name}",
             final
         ], check=True)
 
-        name = os.path.basename(raw)
-        caption = f"🎵 {name}\n🔗 @{CHANNEL_USERNAME}"
+        caption = f"🎵 {original_name}\n🔗 @{CHANNEL_USERNAME}"
 
         await context.bot.send_audio(
             chat_id=CHANNEL_ID,
             audio=open(final, "rb"),
-            filename=name,
+            filename=original_name,
             caption=caption
         )
 
@@ -183,8 +185,11 @@ async def handle_forwarded_audio(update, context):
             "-i", raw, "-i", COVER_PATH,
             "-map_metadata", "-1",
             "-map", "0:a", "-map", "1:v",
-            "-c:a", "copy", "-c:v", "mjpeg",
+            "-c:a", "libmp3lame",       # encode audio to apply metadata
+            "-b:a", "320k",
+            "-c:v", "mjpeg",
             "-id3v2_version", "3",
+            "-metadata", f"title={original_name}",
             "-metadata", f"artist=@{CHANNEL_USERNAME}",
             "-metadata", f"album=@{CHANNEL_USERNAME}",
             "-metadata", f"comment=@{CHANNEL_USERNAME}",
