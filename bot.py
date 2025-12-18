@@ -1,5 +1,5 @@
 # =========================================================
-# bot.py - نسخه اصلاح شده
+# bot.py - نسخه اصلاح شده و بهینه برای سرعت پردازش
 # =========================================================
 
 # =========================================================
@@ -158,13 +158,15 @@ async def run_cmd(*cmd, progress_callback=None):
         raise Exception(f"Command {cmd} failed: {error_msg}")
     return stdout.decode(), stderr.decode()
 
+# =========================================================
+# 9. PROCESS AUDIO (OPTIMIZED)
+# =========================================================
 async def process_audio(raw_path, final_path, original_name, progress_cb=None):
-    temp_mp3 = raw_path + "_temp.mp3"
-    await run_cmd("ffmpeg", "-y", "-i", raw_path, "-vn", "-acodec", "libmp3lame", "-b:a", "320k", temp_mp3)
+    # اجرای همه مراحل در یک دستور (encode + add cover + metadata) با threads
     await run_cmd(
         "ffmpeg",
         "-y",
-        "-i", temp_mp3,
+        "-i", raw_path,
         "-i", COVER_PATH,
         "-map_metadata", "-1",
         "-map", "0:a", "-map", "1:v",
@@ -176,10 +178,10 @@ async def process_audio(raw_path, final_path, original_name, progress_cb=None):
         "-metadata", f"artist=@{CHANNEL_USERNAME}",
         "-metadata", f"album=@{CHANNEL_USERNAME}",
         "-metadata", f"comment=@{CHANNEL_USERNAME}",
+        "-threads", "0",  # استفاده از تمام هسته‌های CPU
         final_path,
         progress_callback=progress_cb
     )
-    os.remove(temp_mp3)
 
 async def parse_ffmpeg_progress(line, start_time, status_msg=None):
     match = re.search(r'time=(\d+:\d+:\d+\.\d+)', line)
@@ -202,7 +204,7 @@ async def parse_ffmpeg_progress(line, start_time, status_msg=None):
                     pass
 
 # =========================================================
-# 9. HANDLE FORWARDED AUDIO
+# 10. HANDLE FORWARDED AUDIO
 # =========================================================
 async def handle_forwarded_audio(update, context):
     save_user(update.message.from_user.id)
@@ -227,7 +229,7 @@ async def handle_forwarded_audio(update, context):
             await process_audio(raw, final, original_name,
                                 lambda line, start: parse_ffmpeg_progress(line, start, status_msg))
             caption = f"🎵 {original_name}\n🔗 @{CHANNEL_USERNAME}"
-            with open(final, "rb") as f:  # <- اصلاح شد
+            with open(final, "rb") as f:
                 await context.bot.send_audio(
                     chat_id=CHANNEL_ID,
                     audio=f,
@@ -242,7 +244,7 @@ async def handle_forwarded_audio(update, context):
     await queue.put(task)
 
 # =========================================================
-# 10. HANDLE SOUNDCLOUD
+# 11. HANDLE SOUNDCLOUD
 # =========================================================
 SC_REGEX = re.compile(r"(soundcloud\.com\/[^\s]+)")
 
@@ -271,7 +273,7 @@ async def handle_soundcloud(update, context):
             await process_audio(raw, final, original_name,
                                 lambda line, start: parse_ffmpeg_progress(line, start, status_msg))
             caption = f"🎵 {original_name}\n🔗 @{CHANNEL_USERNAME}"
-            with open(final, "rb") as f:  # <- اصلاح شد
+            with open(final, "rb") as f:
                 await context.bot.send_audio(
                     chat_id=CHANNEL_ID,
                     audio=f,
@@ -286,7 +288,7 @@ async def handle_soundcloud(update, context):
     await queue.put(task)
 
 # =========================================================
-# 11. BROADCAST
+# 12. BROADCAST
 # =========================================================
 async def broadcast(update, context):
     if update.message.from_user.id != ADMIN_ID:
@@ -302,13 +304,13 @@ async def broadcast(update, context):
     await update.message.reply_text("✅ پیام شما برای همه کاربران ارسال شد.")
 
 # =========================================================
-# 12. FALLBACK
+# 13. FALLBACK
 # =========================================================
 async def fallback(update, context):
     await update.message.reply_text("🎵 لطفاً فقط موزیک یا لینک SoundCloud ارسال کنید.")
 
 # =========================================================
-# 13. MAIN
+# 14. MAIN
 # =========================================================
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
