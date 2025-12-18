@@ -174,7 +174,8 @@ async def handle_forwarded_audio(update, context):
         raw = f"{DOWNLOAD_DIR}/{uid}.mp3"
         final = f"{DOWNLOAD_DIR}/{uid}_final.mp3"
 
-        await audio.get_file().download_to_drive(raw)
+        file = await audio.get_file()          # ✅ اصلاح شد
+        await file.download_to_drive(raw)      # ✅ اصلاح شد
 
         subprocess.run([
             "ffmpeg",
