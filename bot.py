@@ -1,4 +1,8 @@
 # =========================================================
+# bot.py - نسخه اصلاح شده
+# =========================================================
+
+# =========================================================
 # 1. IMPORTS
 # =========================================================
 import os
@@ -223,7 +227,7 @@ async def handle_forwarded_audio(update, context):
             await process_audio(raw, final, original_name,
                                 lambda line, start: parse_ffmpeg_progress(line, start, status_msg))
             caption = f"🎵 {original_name}\n🔗 @{CHANNEL_USERNAME}"
-            async with open(final, "rb") as f:
+            with open(final, "rb") as f:  # <- اصلاح شد
                 await context.bot.send_audio(
                     chat_id=CHANNEL_ID,
                     audio=f,
@@ -267,7 +271,7 @@ async def handle_soundcloud(update, context):
             await process_audio(raw, final, original_name,
                                 lambda line, start: parse_ffmpeg_progress(line, start, status_msg))
             caption = f"🎵 {original_name}\n🔗 @{CHANNEL_USERNAME}"
-            async with open(final, "rb") as f:
+            with open(final, "rb") as f:  # <- اصلاح شد
                 await context.bot.send_audio(
                     chat_id=CHANNEL_ID,
                     audio=f,
