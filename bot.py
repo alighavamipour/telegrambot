@@ -367,10 +367,13 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CallbackQueryHandler(check_join_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_soundcloud))
+
     app.add_handler(MessageHandler(filters.Regex(URL_REGEX) & ~filters.COMMAND, handle_download_link))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_soundcloud))
     app.add_handler(MessageHandler(filters.AUDIO | filters.Document.AUDIO, handle_forwarded_audio))
+
     app.add_handler(MessageHandler(filters.ALL, fallback))
+
 
     # اجرای workerها
     loop = asyncio.get_event_loop()
