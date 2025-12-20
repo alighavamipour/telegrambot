@@ -1,5 +1,5 @@
 # =========================================================
-# bot.py - FINAL STABLE & UX OPTIMIZED
+# bot.py - FINAL STABLE & FULL FEATURED
 # =========================================================
 
 import os, re, sqlite3, logging, asyncio
@@ -37,7 +37,7 @@ def save_user(uid):
 # ================= UTILS =================
 def clean_filename(name):
     name = re.sub(r'\.(mp3|m4a|wav|flac|ogg|opus)$', '', name, flags=re.I)
-    return name.strip()
+    return name.strip() or "music"
 
 async def run_cmd(*cmd):
     proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
@@ -73,7 +73,7 @@ async def start(update, context):
     save_user(update.message.from_user.id)
     if not await is_member(update.message.from_user.id, context):
         return await force_join(update, context)
-    await update.message.reply_text("🎵 موزیک فوروارد کن یا لینک SoundCloud بفرست")
+    await update.message.reply_text("🎵 موزیک فوروارد کن یا لینک SoundCloud / لینک مستقیم بفرست")
 
 # ================= QUEUE =================
 queue = asyncio.Queue()
@@ -101,6 +101,7 @@ async def tag_and_cover(src, dst, title):
         "-metadata", f"title={title}",
         "-metadata", f"artist=@{CHANNEL_USERNAME}",
         "-metadata", f"album=@{CHANNEL_USERNAME}",
+        "-metadata", f"comment=@{CHANNEL_USERNAME}",
         dst
     )
 
@@ -143,57 +144,67 @@ async def handle_audio(update, context):
 
         await msg.edit_text("⬆️ در حال آپلود در کانال…")
         size = os.path.getsize(final)
+        caption = f"🎵 {name}\n🔗 @{CHANNEL_USERNAME}"
         with open(final, "rb") as f:
             if size <= MAX_FILE_SIZE:
-                await context.bot.send_audio(CHANNEL_ID, f, title=name)
+                await context.bot.send_audio(CHANNEL_ID, f, filename=name, caption=caption)
             else:
-                await context.bot.send_document(CHANNEL_ID, f)
+                await context.bot.send_document(CHANNEL_ID, f, caption=caption)
 
-        await msg.edit_text("🎉 فایل با موفقیت منتشر شد!")
+        await msg.edit_text("🎉 فایل با موفقیت در کانال منتشر شد!")
 
     await queue.put(task)
 
 # ================= SOUNDCLOUD =================
 SC_REGEX = re.compile(r"soundcloud\.com")
+URL_REGEX = re.compile(r"https?://[^\s]+")
 
-async def handle_soundcloud(update, context):
-    if not SC_REGEX.search(update.message.text or ""):
-        return
-
+async def handle_links(update, context):
+    text = update.message.text or ""
     save_user(update.message.from_user.id)
     if not await is_member(update.message.from_user.id, context):
         return await force_join(update, context)
 
-    url = update.message.text.strip()
-    msg = await update.message.reply_text("🔍 دریافت اطلاعات از SoundCloud…", reply_to_message_id=update.message.message_id)
+    url_match = SC_REGEX.search(text) or URL_REGEX.search(text)
+    if not url_match:
+        await update.message.reply_text("❌ لینک معتبر نیست")
+        return
+
+    url = url_match.group(0)
+    msg = await update.message.reply_text(f"🔍 در حال آماده‌سازی دریافت فایل…", reply_to_message_id=update.message.message_id)
 
     uid = uuid4().hex
     raw = f"{DOWNLOAD_DIR}/{uid}.raw"
     final = f"{DOWNLOAD_DIR}/{uid}.mp3"
 
     async def task():
-        title = os.popen(f'yt-dlp --print "%(title)s" "{url}"').read().strip()
-        await msg.edit_text(f"⬇️ در حال دانلود «{title}»…")
-        success = await retry_task(lambda: run_cmd("yt-dlp", "-f", "bestaudio", "-o", raw, url))
-        if not success:
-            await msg.edit_text("❌ دانلود ناموفق بود (تلاش 2/2)")
-            return
+        try:
+            title = os.popen(f'yt-dlp --print "%(title)s" "{url}"').read().strip() or "music"
+            await msg.edit_text(f"⬇️ در حال دانلود «{title}»…")
+            success = await retry_task(lambda: run_cmd("yt-dlp", "-f", "bestaudio", "-o", raw, url))
+            if not success:
+                await msg.edit_text("❌ دانلود ناموفق بود (تلاش 2/2)")
+                return
 
-        await msg.edit_text("⚙️ تبدیل به MP3 و آماده‌سازی…")
-        success = await retry_task(lambda: tag_and_cover(raw, final, title))
-        if not success:
-            await msg.edit_text("❌ پردازش فایل ناموفق بود (تلاش 2/2)")
-            return
+            await msg.edit_text("⚙️ تبدیل به MP3 و آماده‌سازی…")
+            success = await retry_task(lambda: tag_and_cover(raw, final, title))
+            if not success:
+                await msg.edit_text("❌ پردازش فایل ناموفق بود (تلاش 2/2)")
+                return
 
-        await msg.edit_text("⬆️ در حال آپلود در کانال…")
-        size = os.path.getsize(final)
-        with open(final, "rb") as f:
-            if size <= MAX_FILE_SIZE:
-                await context.bot.send_audio(CHANNEL_ID, f, title=title)
-            else:
-                await context.bot.send_document(CHANNEL_ID, f)
+            await msg.edit_text("⬆️ در حال آپلود در کانال…")
+            size = os.path.getsize(final)
+            caption = f"🎵 {title}\n🔗 @{CHANNEL_USERNAME}"
+            with open(final, "rb") as f:
+                if size <= MAX_FILE_SIZE:
+                    await context.bot.send_audio(CHANNEL_ID, f, filename=title, caption=caption)
+                else:
+                    await context.bot.send_document(CHANNEL_ID, f, caption=caption)
 
-        await msg.edit_text("🎉 منتشر شد!")
+            await msg.edit_text("🎉 فایل با موفقیت منتشر شد!")
+        except Exception as e:
+            logging.error(f"Error processing link: {e}")
+            await msg.edit_text("❌ مشکلی در دانلود یا پردازش فایل رخ داد.")
 
     await queue.put(task)
 
@@ -204,7 +215,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(check_join))
     app.add_handler(MessageHandler(filters.AUDIO | filters.Document.AUDIO, handle_audio))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_soundcloud))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_links))
 
     loop = asyncio.get_event_loop()
     for _ in range(CONCURRENCY):
