@@ -45,14 +45,18 @@ async def run_cmd(*cmd):
     if proc.returncode != 0:
         raise Exception(stderr.decode() or stdout.decode())
 
-def resolve_soundcloud_url(url):
+def resolve_soundcloud_url(url, max_redirects=5):
     """
     دنبال کردن ریدایرکت لینک کوتاه SoundCloud و برگرداندن لینک واقعی
     """
     try:
-        r = requests.head(url, allow_redirects=True, timeout=10)
-        final_url = r.url
-        return final_url
+        for _ in range(max_redirects):
+            r = requests.get(url, allow_redirects=False, timeout=10)
+            if r.status_code in [301, 302, 303, 307, 308] and 'Location' in r.headers:
+                url = r.headers['Location']
+            else:
+                break
+        return url
     except:
         return url
 
@@ -185,7 +189,9 @@ async def handle_links(update, context):
         await update.message.reply_text("❌ لینک معتبر نیست!")
         return
 
+    # resolve URL برای لینک‌های کوتاه
     url = resolve_soundcloud_url(url_match.group(0))
+
     msg = await update.message.reply_text(f"🔍 در حال بررسی اطلاعات از SoundCloud…", reply_to_message_id=update.message.message_id)
 
     uid = uuid4().hex
