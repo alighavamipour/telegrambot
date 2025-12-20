@@ -1,5 +1,5 @@
 # =========================================================
-# bot.py - FINAL STABLE & OPTIMIZED VERSION
+# bot.py - FINAL STABLE & UX OPTIMIZED
 # =========================================================
 
 import os, re, sqlite3, logging, asyncio
@@ -19,7 +19,6 @@ BASE_URL = os.getenv("BASE_URL")
 DOWNLOAD_DIR = "downloads"
 COVER_PATH = "cover.jpg"
 MAX_FILE_SIZE = 50 * 1024 * 1024
-
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 # ================= LOGGING =================
@@ -37,14 +36,14 @@ def save_user(uid):
 
 # ================= UTILS =================
 def clean_filename(name):
-    name = re.sub(r'\.(mp3|m4a|wav|flac)$', '', name, flags=re.I)
+    name = re.sub(r'\.(mp3|m4a|wav|flac|ogg|opus)$', '', name, flags=re.I)
     return name.strip()
 
 async def run_cmd(*cmd):
     proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-    _, err = await proc.communicate()
+    stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
-        raise Exception(err.decode())
+        raise Exception(stderr.decode() or stdout.decode())
 
 # ================= FORCE JOIN =================
 async def is_member(uid, context):
@@ -78,6 +77,7 @@ async def start(update, context):
 
 # ================= QUEUE =================
 queue = asyncio.Queue()
+CONCURRENCY = 3
 
 async def worker():
     while True:
@@ -87,20 +87,34 @@ async def worker():
         finally:
             queue.task_done()
 
-# ================= PROCESS AUDIO =================
+# ================= PROCESS AUDIO WITH COVER =================
 async def tag_and_cover(src, dst, title):
     await run_cmd(
         "ffmpeg", "-y",
         "-i", src,
         "-i", COVER_PATH,
         "-map", "0:a", "-map", "1:v",
-        "-c:a", "copy",
+        "-c:a", "libmp3lame",
+        "-q:a", "2",
         "-c:v", "mjpeg",
+        "-id3v2_version", "3",
         "-metadata", f"title={title}",
         "-metadata", f"artist=@{CHANNEL_USERNAME}",
         "-metadata", f"album=@{CHANNEL_USERNAME}",
         dst
     )
+
+# ================= RETRY HELPER =================
+async def retry_task(task_func, retries=2):
+    for attempt in range(1, retries + 1):
+        try:
+            await task_func()
+            return True
+        except Exception as e:
+            logging.warning(f"Task failed, attempt {attempt}/{retries}: {e}")
+            if attempt == retries:
+                return False
+        await asyncio.sleep(1)
 
 # ================= FORWARDED AUDIO =================
 async def handle_audio(update, context):
@@ -110,7 +124,7 @@ async def handle_audio(update, context):
 
     audio = update.message.audio or update.message.document
     name = clean_filename(audio.file_name or "music")
-    msg = await update.message.reply_text(f"✅ فایل «{name}» دریافت شد")
+    msg = await update.message.reply_text(f"✅ فایل «{name}» دریافت شد", reply_to_message_id=update.message.message_id)
 
     uid = uuid4().hex
     raw = f"{DOWNLOAD_DIR}/{uid}.raw"
@@ -121,19 +135,21 @@ async def handle_audio(update, context):
         file = await audio.get_file()
         await file.download_to_drive(raw)
 
-        await msg.edit_text("⚙️ در حال آماده‌سازی…")
-        await tag_and_cover(raw, final, name)
+        await msg.edit_text("⚙️ در حال تبدیل به MP3 و آماده‌سازی…")
+        success = await retry_task(lambda: tag_and_cover(raw, final, name))
+        if not success:
+            await msg.edit_text("❌ پردازش فایل ناموفق بود (تلاش 2/2)")
+            return
 
         await msg.edit_text("⬆️ در حال آپلود در کانال…")
         size = os.path.getsize(final)
-
         with open(final, "rb") as f:
             if size <= MAX_FILE_SIZE:
                 await context.bot.send_audio(CHANNEL_ID, f, title=name)
             else:
                 await context.bot.send_document(CHANNEL_ID, f)
 
-        await msg.edit_text("🎉 با موفقیت در کانال منتشر شد")
+        await msg.edit_text("🎉 فایل با موفقیت منتشر شد!")
 
     await queue.put(task)
 
@@ -149,7 +165,7 @@ async def handle_soundcloud(update, context):
         return await force_join(update, context)
 
     url = update.message.text.strip()
-    msg = await update.message.reply_text("🔍 دریافت اطلاعات از SoundCloud…")
+    msg = await update.message.reply_text("🔍 دریافت اطلاعات از SoundCloud…", reply_to_message_id=update.message.message_id)
 
     uid = uuid4().hex
     raw = f"{DOWNLOAD_DIR}/{uid}.raw"
@@ -157,23 +173,27 @@ async def handle_soundcloud(update, context):
 
     async def task():
         title = os.popen(f'yt-dlp --print "%(title)s" "{url}"').read().strip()
-        await msg.edit_text(f"⬇️ در حال دانلود «{title}»")
+        await msg.edit_text(f"⬇️ در حال دانلود «{title}»…")
+        success = await retry_task(lambda: run_cmd("yt-dlp", "-f", "bestaudio", "-o", raw, url))
+        if not success:
+            await msg.edit_text("❌ دانلود ناموفق بود (تلاش 2/2)")
+            return
 
-        await run_cmd("yt-dlp", "-f", "bestaudio", "-o", raw, url)
-
-        await msg.edit_text("⚙️ آماده‌سازی نهایی…")
-        await tag_and_cover(raw, final, title)
+        await msg.edit_text("⚙️ تبدیل به MP3 و آماده‌سازی…")
+        success = await retry_task(lambda: tag_and_cover(raw, final, title))
+        if not success:
+            await msg.edit_text("❌ پردازش فایل ناموفق بود (تلاش 2/2)")
+            return
 
         await msg.edit_text("⬆️ در حال آپلود در کانال…")
         size = os.path.getsize(final)
-
         with open(final, "rb") as f:
             if size <= MAX_FILE_SIZE:
                 await context.bot.send_audio(CHANNEL_ID, f, title=title)
             else:
                 await context.bot.send_document(CHANNEL_ID, f)
 
-        await msg.edit_text("🎉 منتشر شد")
+        await msg.edit_text("🎉 منتشر شد!")
 
     await queue.put(task)
 
@@ -187,7 +207,8 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_soundcloud))
 
     loop = asyncio.get_event_loop()
-    loop.create_task(worker())
+    for _ in range(CONCURRENCY):
+        loop.create_task(worker())
 
     app.run_webhook(
         listen="0.0.0.0",
