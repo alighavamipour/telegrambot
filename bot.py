@@ -2,7 +2,7 @@
 # bot.py - FINAL STABLE & FULL FEATURED
 # =========================================================
 
-import os, re, sqlite3, logging, asyncio
+import os, re, sqlite3, logging, asyncio, requests
 from uuid import uuid4
 from datetime import datetime
 
@@ -44,6 +44,16 @@ async def run_cmd(*cmd):
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
         raise Exception(stderr.decode() or stdout.decode())
+
+def resolve_url(url):
+    """
+    اگر لینک کوتاه SoundCloud بود، ریدایرکتشو دنبال کن و لینک واقعی برگردون
+    """
+    try:
+        r = requests.head(url, allow_redirects=True, timeout=10)
+        return r.url
+    except:
+        return url  # اگر نشد، همون لینک اصلی رو بده
 
 # ================= FORCE JOIN =================
 async def is_member(uid, context):
@@ -155,8 +165,8 @@ async def handle_audio(update, context):
 
     await queue.put(task)
 
-# ================= SOUNDCLOUD =================
-SC_REGEX = re.compile(r"soundcloud\.com")
+# ================= LINKS / SOUNDCLOUD =================
+SC_REGEX = re.compile(r"(soundcloud\.com|on\.soundcloud\.com)")
 URL_REGEX = re.compile(r"https?://[^\s]+")
 
 async def handle_links(update, context):
@@ -170,7 +180,7 @@ async def handle_links(update, context):
         await update.message.reply_text("❌ لینک معتبر نیست")
         return
 
-    url = url_match.group(0)
+    url = resolve_url(url_match.group(0))
     msg = await update.message.reply_text(f"🔍 در حال آماده‌سازی دریافت فایل…", reply_to_message_id=update.message.message_id)
 
     uid = uuid4().hex
