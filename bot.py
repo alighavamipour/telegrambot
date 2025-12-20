@@ -1,8 +1,8 @@
 # =========================================================
-# bot.py - FINAL STABLE & IMPROVED
+# bot.py - FINAL STABLE & FULL FEATURED WITH SOUNDLOUD SHORT URL SUPPORT
 # =========================================================
 
-import os, re, sqlite3, logging, asyncio
+import os, re, sqlite3, logging, asyncio, requests
 from uuid import uuid4
 from datetime import datetime
 
@@ -44,6 +44,17 @@ async def run_cmd(*cmd):
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
         raise Exception(stderr.decode() or stdout.decode())
+
+def resolve_soundcloud_url(url):
+    """
+    دنبال کردن ریدایرکت لینک کوتاه SoundCloud و برگرداندن لینک واقعی
+    """
+    try:
+        r = requests.head(url, allow_redirects=True, timeout=10)
+        final_url = r.url
+        return final_url
+    except:
+        return url
 
 # ================= FORCE JOIN =================
 async def is_member(uid, context):
@@ -144,7 +155,7 @@ async def handle_audio(update, context):
                 await msg.edit_text("❌ پردازش فایل ناموفق بود (تلاش 2/2)")
                 return
         else:
-            final = raw  # اگر خودش MP3 بود، تبدیل نکن
+            final = raw
 
         await msg.edit_text("⬆️ در حال آپلود در کانال…")
         size = os.path.getsize(final)
@@ -174,7 +185,7 @@ async def handle_links(update, context):
         await update.message.reply_text("❌ لینک معتبر نیست!")
         return
 
-    url = url_match.group(0)
+    url = resolve_soundcloud_url(url_match.group(0))
     msg = await update.message.reply_text(f"🔍 در حال بررسی اطلاعات از SoundCloud…", reply_to_message_id=update.message.message_id)
 
     uid = uuid4().hex
