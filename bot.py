@@ -1,5 +1,5 @@
 # =========================================================
-# bot.py - FINAL STABLE & FULL FEATURED
+# bot.py - FINAL STABLE & FULL FEATURED WITH SHORT URL SUPPORT
 # =========================================================
 
 import os, re, sqlite3, logging, asyncio, requests
@@ -53,7 +53,7 @@ def resolve_url(url):
         r = requests.head(url, allow_redirects=True, timeout=10)
         return r.url
     except:
-        return url  # اگر نشد، همون لینک اصلی رو بده
+        return url
 
 # ================= FORCE JOIN =================
 async def is_member(uid, context):
