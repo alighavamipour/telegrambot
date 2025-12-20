@@ -45,20 +45,19 @@ async def run_cmd(*cmd):
     if proc.returncode != 0:
         raise Exception(stderr.decode() or stdout.decode())
 
-def resolve_soundcloud_url(url, max_redirects=5):
+def resolve_soundcloud_url(url):
     """
-    دنبال کردن ریدایرکت لینک کوتاه SoundCloud و برگرداندن لینک واقعی
+    دنبال کردن کامل ریدایرکت لینک کوتاه SoundCloud و برگرداندن لینک واقعی
     """
     try:
-        for _ in range(max_redirects):
-            r = requests.get(url, allow_redirects=False, timeout=10)
-            if r.status_code in [301, 302, 303, 307, 308] and 'Location' in r.headers:
-                url = r.headers['Location']
-            else:
-                break
+        r = requests.get(url, allow_redirects=True, timeout=10)
+        final_url = r.url
+        logging.info(f"[SoundCloud Redirect] {url}  -->  {final_url}")
+        return final_url
+    except Exception as e:
+        logging.warning(f"resolve_soundcloud_url failed: {e}")
         return url
-    except:
-        return url
+
 
 # ================= FORCE JOIN =================
 async def is_member(uid, context):
