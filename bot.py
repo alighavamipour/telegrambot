@@ -46,9 +46,6 @@ async def run_cmd(*cmd):
         raise Exception(stderr.decode() or stdout.decode())
 
 def resolve_soundcloud_url(url):
-    """
-    دنبال کردن کامل ریدایرکت لینک کوتاه SoundCloud و برگرداندن لینک واقعی
-    """
     try:
         r = requests.get(url, allow_redirects=True, timeout=10)
         final_url = r.url
@@ -57,8 +54,6 @@ def resolve_soundcloud_url(url):
     except Exception as e:
         logging.warning(f"resolve_soundcloud_url failed: {e}")
         return url
-
-
 
 # ================= FORCE JOIN =================
 async def is_member(uid, context):
@@ -73,22 +68,33 @@ async def force_join(update, context):
         [InlineKeyboardButton("🔔 عضویت در کانال", url=f"https://t.me/{CHANNEL_USERNAME}")],
         [InlineKeyboardButton("✅ بررسی عضویت", callback_data="check")]
     ])
-    await update.message.reply_text("برای استفاده از ربات، لطفاً عضو کانال شوید 👇", reply_markup=kb)
+    await update.message.reply_text(
+        "🔔 برای استفاده از خدمات ربات، ابتدا در کانال رسمی عضو شوید.\n"
+        "پس از عضویت، روی «بررسی عضویت» بزنید.",
+        reply_markup=kb
+    )
 
 async def check_join(update, context):
     q = update.callback_query
     await q.answer()
     if await is_member(q.from_user.id, context):
-        await q.edit_message_text("✅ عضویت تایید شد! حالا می‌توانید موزیک بفرستید 🎧")
+        await q.edit_message_text(
+            "✅ عضویت شما با موفقیت تأیید شد.\n"
+            "اکنون می‌توانید فایل یا لینک موسیقی ارسال کنید."
+        )
     else:
-        await q.answer("❌ هنوز عضو کانال نیستید!", show_alert=True)
+        await q.answer("❌ هنوز عضو کانال نیستید.", show_alert=True)
 
 # ================= START =================
 async def start(update, context):
     save_user(update.message.from_user.id)
     if not await is_member(update.message.from_user.id, context):
         return await force_join(update, context)
-    await update.message.reply_text("🎵 خوش آمدید! موزیک بفرستید یا لینک SoundCloud / لینک مستقیم ارسال کنید")
+
+    await update.message.reply_text(
+        "🎵 خوش آمدید!\n"
+        "برای دریافت نسخهٔ باکیفیت و کاور‌دار موسیقی، کافیست فایل یا لینک SoundCloud ارسال کنید."
+    )
 
 # ================= QUEUE =================
 queue = asyncio.Queue()
@@ -141,36 +147,45 @@ async def handle_audio(update, context):
     audio = update.message.audio or update.message.document
     name = clean_filename(audio.file_name or "music")
     ext = (audio.file_name or "").split(".")[-1].lower()
-    msg = await update.message.reply_text(f"✅ فایل «{name}.{ext}» دریافت شد 🎵", reply_to_message_id=update.message.message_id)
+
+    msg = await update.message.reply_text(
+        f"✨ فایل «{name}.{ext}» با موفقیت دریافت شد.\n"
+        "در حال آماده‌سازی برای پردازش…",
+        reply_to_message_id=update.message.message_id
+    )
 
     uid = uuid4().hex
     raw = f"{DOWNLOAD_DIR}/{uid}.{ext}"
     final = f"{DOWNLOAD_DIR}/{uid}.mp3"
 
     async def task():
-        await msg.edit_text("⬇️ در حال دانلود فایل…")
+        await msg.edit_text("⬇️ در حال دریافت فایل…\nلطفاً چند لحظه صبور باشید.")
         file = await audio.get_file()
         await file.download_to_drive(raw)
 
         if ext != "mp3":
-            await msg.edit_text("⚙️ در حال تبدیل به MP3 و افزودن کاور…")
+            await msg.edit_text(
+                "🎼 در حال تبدیل فایل به فرمت MP3 و افزودن کاور اختصاصی…\n"
+                "کیفیت خروجی تضمین‌شده است."
+            )
             success = await retry_task(lambda: tag_and_cover(raw, final, name))
             if not success:
-                await msg.edit_text("❌ پردازش فایل ناموفق بود (تلاش 2/2)")
+                await msg.edit_text("⚠️ متأسفانه پردازش فایل ناموفق بود.")
                 return
         else:
             final = raw
 
-        await msg.edit_text("⬆️ در حال آپلود در کانال…")
+        await msg.edit_text("📡 در حال انتقال فایل به کانال…\nفرآیند انتشار در حال انجام است.")
         size = os.path.getsize(final)
         caption = f"🎵 {name}\n🔗 @{CHANNEL_USERNAME}"
+
         with open(final, "rb") as f:
             if size <= MAX_FILE_SIZE:
                 await context.bot.send_audio(CHANNEL_ID, f, filename=name, caption=caption)
             else:
                 await context.bot.send_document(CHANNEL_ID, f, caption=caption)
 
-        await msg.edit_text("🎉 فایل با موفقیت در کانال منتشر شد!")
+        await msg.edit_text("✅ عملیات با موفقیت به پایان رسید.\nفایل شما اکنون در کانال منتشر شده است.")
 
     await queue.put(task)
 
@@ -181,18 +196,22 @@ URL_REGEX = re.compile(r"https?://[^\s]+")
 async def handle_links(update, context):
     text = update.message.text or ""
     save_user(update.message.from_user.id)
+
     if not await is_member(update.message.from_user.id, context):
         return await force_join(update, context)
 
     url_match = SC_REGEX.search(text) or URL_REGEX.search(text)
     if not url_match:
-        await update.message.reply_text("❌ لینک معتبر نیست!")
+        await update.message.reply_text("⚠️ لینک ارسال‌شده معتبر نیست.")
         return
 
-    # resolve URL برای لینک‌های کوتاه
     url = resolve_soundcloud_url(url_match.group(0))
 
-    msg = await update.message.reply_text(f"🔍 در حال بررسی اطلاعات از SoundCloud…", reply_to_message_id=update.message.message_id)
+    msg = await update.message.reply_text(
+        "🔍 در حال بررسی و تحلیل لینک SoundCloud…\n"
+        "لطفاً چند لحظه صبر کنید.",
+        reply_to_message_id=update.message.message_id
+    )
 
     uid = uuid4().hex
     raw = f"{DOWNLOAD_DIR}/{uid}.raw"
@@ -200,34 +219,44 @@ async def handle_links(update, context):
 
     async def task():
         try:
-            await msg.edit_text("⏳ استخراج اطلاعات آهنگ…")
+            await msg.edit_text(
+                "⏳ در حال استخراج اطلاعات آهنگ…\n"
+                "در حال آماده‌سازی برای دانلود."
+            )
             title = os.popen(f'yt-dlp --print "%(title)s" "{url}"').read().strip() or "music"
 
-            await msg.edit_text(f"⬇️ در حال دانلود آهنگ «{title}»…")
+            await msg.edit_text(
+                f"⬇️ در حال دانلود آهنگ «{title}»…\n"
+                "این مرحله بسته به حجم فایل ممکن است کمی زمان ببرد."
+            )
             success = await retry_task(lambda: run_cmd("yt-dlp", "-f", "bestaudio", "-o", raw, url))
             if not success:
-                await msg.edit_text("❌ دانلود ناموفق بود (تلاش 2/2)")
+                await msg.edit_text("❌ دانلود فایل ناموفق بود.")
                 return
 
-            await msg.edit_text("⚙️ در حال تبدیل به MP3 و افزودن کاور…")
+            await msg.edit_text(
+                "🎧 در حال تبدیل آهنگ و افزودن کاور اختصاصی…\n"
+                "لطفاً منتظر بمانید."
+            )
             success = await retry_task(lambda: tag_and_cover(raw, final, title))
             if not success:
-                await msg.edit_text("❌ پردازش فایل ناموفق بود (تلاش 2/2)")
+                await msg.edit_text("⚠️ پردازش فایل ناموفق بود.")
                 return
 
-            await msg.edit_text("⬆️ در حال آپلود در کانال…")
+            await msg.edit_text("📡 در حال انتقال فایل به کانال…")
             size = os.path.getsize(final)
             caption = f"🎵 {title}\n🔗 @{CHANNEL_USERNAME}"
+
             with open(final, "rb") as f:
                 if size <= MAX_FILE_SIZE:
                     await context.bot.send_audio(CHANNEL_ID, f, filename=title, caption=caption)
                 else:
                     await context.bot.send_document(CHANNEL_ID, f, caption=caption)
 
-            await msg.edit_text("🎉 فایل با موفقیت در کانال منتشر شد!")
+            await msg.edit_text("✅ عملیات با موفقیت انجام شد.\nفایل شما اکنون در کانال قرار دارد.")
         except Exception as e:
             logging.error(f"Error processing link: {e}")
-            await msg.edit_text("❌ مشکلی در دانلود یا پردازش فایل رخ داد.")
+            await msg.edit_text("❌ خطایی در دانلود یا پردازش فایل رخ داد.")
 
     await queue.put(task)
 
