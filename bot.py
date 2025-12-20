@@ -59,6 +59,7 @@ def resolve_soundcloud_url(url):
         return url
 
 
+
 # ================= FORCE JOIN =================
 async def is_member(uid, context):
     try:
@@ -174,7 +175,7 @@ async def handle_audio(update, context):
     await queue.put(task)
 
 # ================= LINKS / SOUNDCLOUD =================
-SC_REGEX = re.compile(r"(soundcloud\.com|on\.soundcloud\.com)")
+SC_REGEX = re.compile(r"https?://(?:on\.)?soundcloud\.com/[^\s]+")
 URL_REGEX = re.compile(r"https?://[^\s]+")
 
 async def handle_links(update, context):
