@@ -1,25 +1,30 @@
 # =========================================================
-# bot.py - SOUNDLOUD PRO BOT (PLAYLIST + SET + QUALITY + HISTORY + RESUME)
+# bot.py - SOUNDLOUD PRO BOT (Supabase + Async + Resume)
 # =========================================================
 
 import os
 import re
-import sqlite3
 import logging
 import asyncio
-import requests
 import json
 from uuid import uuid4
 from datetime import datetime
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+import requests
+from supabase import AsyncClient, create_client
+
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Update
+)
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
     ContextTypes,
-    filters,
+    filters
 )
 
 # ================= ENV =================
@@ -28,163 +33,135 @@ CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 BASE_URL = os.getenv("BASE_URL")
 
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
 DOWNLOAD_DIR = "downloads"
 COVER_PATH = "cover.jpg"
 
-MAX_AUDIO_DL_LIMIT = 20 * 1024 * 1024   # محدودیت دانلود Audio در Telegram
-MAX_FILE_SIZE = 50 * 1024 * 1024        # محدودیت sendAudio (sendDocument تا 2GB اوکی است)
+MAX_AUDIO_DL_LIMIT = 20 * 1024 * 1024
+MAX_FILE_SIZE = 50 * 1024 * 1024
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 # ================= LOGGING =================
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# ================= DATABASE =================
-conn = sqlite3.connect("users.db", check_same_thread=False)
-cur = conn.cursor()
+# ================= SUPABASE CLIENT =================
+supabase: AsyncClient = None
 
-cur.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY)")
+async def init_supabase():
+    global supabase
+    supabase = await AsyncClient.create(SUPABASE_URL, SUPABASE_KEY)
+    logging.info("Supabase client initialized.")
+# =========================================================
+# ===============  SUPABASE DATABASE HELPERS  =============
+# =========================================================
 
-cur.execute("""
-    CREATE TABLE IF NOT EXISTS history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        title TEXT,
-        source TEXT,
-        created_at TEXT
-    )
-""")
+# ---------------- USERS ----------------
+async def save_user(uid: int):
+    await supabase.table("users").upsert({"user_id": uid}).execute()
 
-cur.execute("""
-    CREATE TABLE IF NOT EXISTS settings (
-        user_id INTEGER PRIMARY KEY,
-        quality TEXT
-    )
-""")
+# ---------------- SETTINGS ----------------
+async def set_user_quality(uid: int, quality: str):
+    await supabase.table("settings").upsert({
+        "user_id": uid,
+        "quality": quality,
+        "updated_at": datetime.utcnow().isoformat()
+    }).execute()
 
-# برای Resume پلی‌لیست / ست
-cur.execute("""
-    CREATE TABLE IF NOT EXISTS jobs (
-        job_id TEXT PRIMARY KEY,
-        user_id INTEGER,
-        playlist_title TEXT,
-        source_url TEXT,
-        total_tracks INTEGER,
-        status TEXT,
-        created_at TEXT,
-        updated_at TEXT
-    )
-""")
+async def get_user_quality(uid: int) -> str:
+    res = await supabase.table("settings").select("quality").eq("user_id", uid).execute()
+    if res.data:
+        return res.data[0]["quality"]
+    return "best"
 
-cur.execute("""
-    CREATE TABLE IF NOT EXISTS job_tracks (
-        job_id TEXT,
-        track_index INTEGER,
-        title TEXT,
-        status TEXT,
-        PRIMARY KEY (job_id, track_index)
-    )
-""")
+# ---------------- HISTORY ----------------
+async def add_history(uid: int, title: str, source: str):
+    await supabase.table("history").insert({
+        "user_id": uid,
+        "title": title,
+        "source": source,
+        "created_at": datetime.utcnow().isoformat()
+    }).execute()
 
-conn.commit()
+async def get_history(uid: int, limit: int = 10):
+    res = await supabase.table("history") \
+        .select("*") \
+        .eq("user_id", uid) \
+        .order("id", desc=True) \
+        .limit(limit) \
+        .execute()
+    return res.data or []
 
-# ================= BASIC DB HELPERS =================
-def save_user(uid: int):
-    cur.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (uid,))
-    conn.commit()
+# ---------------- JOBS (Resume System) ----------------
+async def create_job(job_id, user_id, playlist_title, url, total_tracks):
+    await supabase.table("jobs").upsert({
+        "job_id": job_id,
+        "user_id": user_id,
+        "playlist_title": playlist_title,
+        "source_url": url,
+        "total_tracks": total_tracks,
+        "status": "running",
+        "created_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.utcnow().isoformat()
+    }).execute()
 
-def set_user_quality(uid: int, quality: str):
-    cur.execute(
-        "INSERT INTO settings (user_id, quality) VALUES (?, ?) "
-        "ON CONFLICT(user_id) DO UPDATE SET quality=excluded.quality",
-        (uid, quality),
-    )
-    conn.commit()
-
-def get_user_quality(uid: int) -> str:
-    cur.execute("SELECT quality FROM settings WHERE user_id=?", (uid,))
-    row = cur.fetchone()
-    return row[0] if row and row[0] else "best"
-
-def add_history(uid: int, title: str, source: str):
-    cur.execute(
-        "INSERT INTO history (user_id, title, source, created_at) VALUES (?, ?, ?, ?)",
-        (uid, title, source, datetime.utcnow().isoformat()),
-    )
-    conn.commit()
-
-def get_history(uid: int, limit: int = 10):
-    cur.execute(
-        "SELECT title, source, created_at FROM history WHERE user_id=? ORDER BY id DESC LIMIT ?",
-        (uid, limit),
-    )
-    return cur.fetchall()
-
-# ================= RESUME HELPERS =================
-def create_job(job_id, user_id, playlist_title, url, total_tracks):
-    cur.execute("""
-        INSERT OR REPLACE INTO jobs 
-        (job_id, user_id, playlist_title, source_url, total_tracks, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, 'running', datetime('now'), datetime('now'))
-    """, (job_id, user_id, playlist_title, url, total_tracks))
-    conn.commit()
-
-def create_job_tracks(job_id, tracks):
+async def create_job_tracks(job_id, tracks):
+    rows = []
     for idx, t in enumerate(tracks):
-        cur.execute("""
-            INSERT OR REPLACE INTO job_tracks (job_id, track_index, title, status)
-            VALUES (?, ?, ?, COALESCE(
-                (SELECT status FROM job_tracks WHERE job_id=? AND track_index=?),
-                'pending'
-            ))
-        """, (job_id, idx, t["title"], job_id, idx))
-    conn.commit()
+        rows.append({
+            "job_id": job_id,
+            "track_index": idx,
+            "title": t["title"],
+            "status": "pending"
+        })
+    await supabase.table("job_tracks").upsert(rows).execute()
 
-def get_incomplete_job(user_id, url):
-    cur.execute("""
-        SELECT job_id, playlist_title, total_tracks 
-        FROM jobs 
-        WHERE user_id=? AND source_url=? AND status='running'
-    """, (user_id, url))
-    return cur.fetchone()
+async def get_incomplete_job(user_id, url):
+    res = await supabase.table("jobs") \
+        .select("job_id, playlist_title, total_tracks") \
+        .eq("user_id", user_id) \
+        .eq("source_url", url) \
+        .eq("status", "running") \
+        .execute()
+    return res.data[0] if res.data else None
 
-def get_pending_indices_for_job(job_id):
-    cur.execute("""
-        SELECT track_index, title 
-        FROM job_tracks 
-        WHERE job_id=? AND status!='sent'
-        ORDER BY track_index ASC
-    """, (job_id,))
-    rows = cur.fetchall()
-    return [(r[0], r[1]) for r in rows]
+async def get_pending_indices_for_job(job_id):
+    res = await supabase.table("job_tracks") \
+        .select("track_index, title") \
+        .eq("job_id", job_id) \
+        .neq("status", "sent") \
+        .order("track_index") \
+        .execute()
+    return [(r["track_index"], r["title"]) for r in res.data]
 
-def mark_track_sent(job_id, index):
-    cur.execute("""
-        UPDATE job_tracks 
-        SET status='sent' 
-        WHERE job_id=? AND track_index=?
-    """, (job_id, index))
-    cur.execute("""
-        UPDATE jobs 
-        SET updated_at=datetime('now')
-        WHERE job_id=?
-    """, (job_id,))
-    conn.commit()
+async def mark_track_sent(job_id, index):
+    await supabase.table("job_tracks") \
+        .update({"status": "sent"}) \
+        .eq("job_id", job_id) \
+        .eq("track_index", index) \
+        .execute()
 
-def finish_job(job_id):
-    cur.execute("""
-        UPDATE jobs 
-        SET status='finished', updated_at=datetime('now')
-        WHERE job_id=?
-    """, (job_id,))
-    conn.commit()
+    await supabase.table("jobs") \
+        .update({"updated_at": datetime.utcnow().isoformat()}) \
+        .eq("job_id", job_id) \
+        .execute()
 
-def reset_job(job_id):
-    cur.execute("DELETE FROM job_tracks WHERE job_id=?", (job_id,))
-    cur.execute("DELETE FROM jobs WHERE job_id=?", (job_id,))
-    conn.commit()
+async def finish_job(job_id):
+    await supabase.table("jobs") \
+        .update({"status": "finished", "updated_at": datetime.utcnow().isoformat()}) \
+        .eq("job_id", job_id) \
+        .execute()
 
-# ================= UTILS =================
+async def reset_job(job_id):
+    await supabase.table("job_tracks").delete().eq("job_id", job_id).execute()
+    await supabase.table("jobs").delete().eq("job_id", job_id).execute()
+
+# =========================================================
+# ======================== UTILS ==========================
+# =========================================================
+
 def clean_filename(name: str) -> str:
     name = re.sub(r'\.(mp3|m4a|wav|flac|ogg|opus)$', '', name, flags=re.I)
     return name.strip() or "music"
@@ -242,11 +219,8 @@ async def tag_and_cover(src: str, dst: str, title: str):
 def resolve_soundcloud_url(url: str) -> str:
     try:
         r = requests.get(url, allow_redirects=True, timeout=10)
-        final_url = r.url
-        logging.info(f"[SoundCloud Redirect] {url}  -->  {final_url}")
-        return final_url
-    except Exception as e:
-        logging.warning(f"resolve_soundcloud_url failed: {e}")
+        return r.url
+    except:
         return url
 
 def get_format_for_quality(q: str) -> str:
@@ -294,9 +268,12 @@ def parse_selection(text: str, max_n: int):
                 continue
     return sorted(result)
 
-# ================= QUEUE =================
+# =========================================================
+# ======================== QUEUE ==========================
+# =========================================================
+
 queue: asyncio.Queue = asyncio.Queue()
-CONCURRENCY = 2  # کمی کمتر برای فشار کمتر روی Render
+CONCURRENCY = 2
 
 async def worker():
     try:
@@ -312,33 +289,14 @@ async def worker():
         logging.info("Worker stopped.")
 
 async def start_workers(app: Application):
+    asyncio.create_task(init_supabase())
     for _ in range(CONCURRENCY):
         asyncio.create_task(worker())
     logging.info("Workers started.")
+# =========================================================
+# ===================== CALLBACK HANDLER ==================
+# =========================================================
 
-# ================= FORCE JOIN =================
-async def is_member(uid: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    try:
-        m = await context.bot.get_chat_member(CHANNEL_ID, uid)
-        return m.status in ("member", "administrator", "creator")
-    except:
-        return False
-
-async def force_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔔 عضویت در کانال", url=f"https://t.me/{CHANNEL_USERNAME}")],
-        [InlineKeyboardButton("✅ بررسی عضویت", callback_data="check_join")]
-    ])
-    if update.message:
-        await update.message.reply_text(
-            "🔔 برای استفاده از ربات ابتدا عضو کانال شوید.",
-            reply_markup=kb
-        )
-
-# ================= STATE =================
-pending_playlists = {}  # {user_id: {...}}
-
-# ================= CALLBACK HANDLER =================
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if not q:
@@ -348,6 +306,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     await q.answer()
 
+    # ---------------- CHECK JOIN ----------------
     if data == "check_join":
         if await is_member(uid, context):
             try:
@@ -358,17 +317,21 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.answer("❌ هنوز عضو کانال نیستید.", show_alert=True)
         return
 
+    # ---------------- QUALITY ----------------
     if data.startswith("q_"):
         q_val = data[2:]
         if q_val not in ("best", "128", "192", "320"):
             return
-        set_user_quality(uid, q_val)
+
+        await set_user_quality(uid, q_val)
+
         text_map = {
             "best": "بهترین کیفیت موجود",
             "128": "۱۲۸ kbps",
             "192": "۱۹۲ kbps",
             "320": "۳۲۰ kbps",
         }
+
         try:
             await q.edit_message_text(
                 f"🎚 کیفیت پیش‌فرض شما روی «{text_map[q_val]}» تنظیم شد.\n"
@@ -378,10 +341,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         return
 
-    # ادامه / ری‌استارت Job
+    # ---------------- RESUME JOB ----------------
     if data.startswith("resume:"):
         job_id = data.split(":", 1)[1]
-        pending = get_pending_indices_for_job(job_id)
+        pending = await get_pending_indices_for_job(job_id)
+
         if not pending:
             return await q.edit_message_text("❌ هیچ ترک ناتمامی برای این پلی‌لیست پیدا نشد.")
 
@@ -393,16 +357,18 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await queue.put(task)
         return
 
+    # ---------------- RESTART JOB ----------------
     if data.startswith("restart:"):
         job_id = data.split(":", 1)[1]
-        reset_job(job_id)
+        await reset_job(job_id)
+
         try:
             await q.edit_message_text("🔄 پردازش از اول شروع می‌شود.\nلطفاً دوباره لینک را ارسال کن.")
         except:
             pass
         return
 
-    # انتخاب پلی‌لیست (همه / دستی)
+    # ---------------- PLAYLIST SELECTION ----------------
     if data.startswith("pl_all:") or data.startswith("pl_select:"):
         if uid not in pending_playlists:
             try:
@@ -413,6 +379,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         job_id = data.split(":", 1)[1]
         pl = pending_playlists.get(uid)
+
         if not pl or pl["job_id"] != job_id:
             try:
                 await q.edit_message_text("⛔ این درخواست منقضی شده است. دوباره لینک را بفرست.")
@@ -420,9 +387,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             return
 
+        # ---- ALL TRACKS ----
         if data.startswith("pl_all:"):
             pl["await_selection"] = False
             pending_playlists[uid] = pl
+
             try:
                 await q.edit_message_text("✅ همهٔ ترک‌ها انتخاب شدند.\nدر حال شروع دانلود و پردازش هستم…")
             except:
@@ -432,6 +401,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=pl["chat_id"],
                 text="🔄 در حال آماده‌سازی دانلود پلی‌لیست…"
             )
+
             pl["status_msg_id"] = msg.message_id
             pending_playlists[uid] = pl
 
@@ -439,10 +409,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await process_playlist(uid, context, pl, list(range(len(pl["tracks"]))))
 
             await queue.put(task)
+            return
 
-        elif data.startswith("pl_select:"):
+        # ---- MANUAL SELECTION ----
+        if data.startswith("pl_select:"):
             pl["await_selection"] = True
             pending_playlists[uid] = pl
+
             try:
                 await q.edit_message_text(
                     "✏️ شماره‌ی ترک‌هایی که می‌خواهی را بفرست:\n"
@@ -450,14 +423,20 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             except:
                 pass
+            return
 
-# ================= COMMANDS =================
+
+# =========================================================
+# ========================= COMMANDS ======================
+# =========================================================
+
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.from_user:
+    if not update.message:
         return
 
     uid = update.message.from_user.id
-    save_user(uid)
+    await save_user(uid)
+
     if not await is_member(uid, context):
         return await force_join(update, context)
 
@@ -468,28 +447,32 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "برای انتخاب کیفیت SoundCloud: /quality"
     )
 
+
 async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.from_user:
+    if not update.message:
         return
 
     uid = update.message.from_user.id
-    save_user(uid)
-    rows = get_history(uid, 10)
+    rows = await get_history(uid, 10)
+
     if not rows:
         return await update.message.reply_text("📂 هنوز هیچ موزیکی با ربات پردازش نکردی.")
+
     lines = []
-    for title, source, created_at in rows:
-        src = source if source != "forwarded" else "فایل فورواردی / آپلود"
-        lines.append(f"• {title}\n  ↳ {src}")
+    for r in rows:
+        src = r["source"] if r["source"] != "forwarded" else "فایل فورواردی / آپلود"
+        lines.append(f"• {r['title']}\n  ↳ {src}")
+
     await update.message.reply_text("🕘 آخرین موزیک‌های پردازش‌شده:\n\n" + "\n\n".join(lines))
 
+
 async def quality_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.from_user:
+    if not update.message:
         return
 
     uid = update.message.from_user.id
-    save_user(uid)
-    current = get_user_quality(uid)
+    current = await get_user_quality(uid)
+
     kb = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🎧 بهترین", callback_data="q_best"),
@@ -500,19 +483,24 @@ async def quality_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("🎚 128kbps", callback_data="q_128"),
         ]
     ])
+
     await update.message.reply_text(
         f"🎚 کیفیت فعلی: {current}\n"
         "یکی از گزینه‌های زیر را انتخاب کن:",
         reply_markup=kb
     )
 
-# ================= AUDIO HANDLER =================
+
+# =========================================================
+# ======================== AUDIO HANDLER ==================
+# =========================================================
+
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.from_user:
+    if not update.message:
         return
 
     uid = update.message.from_user.id
-    save_user(uid)
+    await save_user(uid)
 
     if not await is_member(uid, context):
         return await force_join(update, context)
@@ -552,376 +540,350 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     await context.bot.send_document(CHANNEL_ID, f, filename=name + ".mp3", caption=caption)
 
-            add_history(uid, name, "forwarded")
+            await add_history(uid, name, "forwarded")
             await msg.edit_text("✅ فایل با موفقیت پردازش و ارسال شد.")
+
         except Exception as e:
             logging.error(f"Error processing audio: {e}")
             try:
                 await msg.edit_text("❌ خطایی در پردازش فایل رخ داد.")
             except:
                 pass
+
         finally:
             for p in (raw, final):
                 if os.path.exists(p):
                     os.remove(p)
 
     await queue.put(task)
+# =========================================================
+# ===================== TEXT HANDLER ======================
+# =========================================================
 
-# ================= SOUNDLOUD PLAYLIST / SET =================
-SC_REGEX = re.compile(r"https?://(?:on\.)?soundcloud\.com/[^\s]+")
+pending_playlists = {}  # uid -> {job_id, tracks, ...}
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.from_user:
+    if not update.message:
         return
 
     uid = update.message.from_user.id
-    text = update.message.text or ""
-    save_user(uid)
+    text = update.message.text.strip()
+
+    await save_user(uid)
 
     if not await is_member(uid, context):
         return await force_join(update, context)
 
-    # اگر در حالت انتخاب دستی پلی‌لیست هست
+    # اگر کاربر در حالت انتخاب ترک باشد
     if uid in pending_playlists and pending_playlists[uid].get("await_selection"):
         pl = pending_playlists[uid]
-        total = len(pl["tracks"])
-        indices = parse_selection(text, total)
-        if not indices:
-            return await update.message.reply_text(
-                "⚠️ ورودی نامعتبر بود.\n"
-                f"لطفاً مثل این مثال بفرست: 1,3,5-10 (حداکثر {total})"
-            )
+        max_n = len(pl["tracks"])
+        selected = parse_selection(text, max_n)
 
-        pending_playlists[uid]["await_selection"] = False
-        await update.message.reply_text(
-            f"✅ {len(indices)} ترک انتخاب شد.\n"
-            "در حال شروع دانلود و پردازش هستم…"
-        )
-        msg = await update.message.reply_text("🔄 در حال آماده‌سازی دانلود پلی‌لیست…")
-        pending_playlists[uid]["status_msg_id"] = msg.message_id
-        pending_playlists[uid]["chat_id"] = msg.chat_id
+        if not selected:
+            return await update.message.reply_text("❌ انتخاب نامعتبر. دوباره امتحان کن.")
+
+        pl["await_selection"] = False
+        pending_playlists[uid] = pl
+
+        msg = await update.message.reply_text("🔄 در حال شروع پردازش انتخاب‌های شما…")
+        pl["status_msg_id"] = msg.message_id
 
         async def task():
-            await process_playlist(uid, context, pending_playlists[uid], indices)
+            await process_playlist(uid, context, pl, selected)
 
         await queue.put(task)
         return
 
     # لینک SoundCloud
-    m = SC_REGEX.search(text)
-    if not m:
-        return await update.message.reply_text("⚠️ فقط لینک‌های SoundCloud پشتیبانی می‌شوند.")
+    if "soundcloud.com" in text.lower():
+        url = resolve_soundcloud_url(text)
+        return await handle_soundcloud_link(update, context, uid, url)
 
-    raw_url = m.group(0)
-    url = resolve_soundcloud_url(raw_url)
-    user_quality = get_user_quality(uid)
+    await update.message.reply_text("❗ لطفاً لینک SoundCloud یا فایل موسیقی ارسال کن.")
 
-    info_msg = await update.message.reply_text("🔍 در حال تحلیل لینک SoundCloud…")
 
-    # اگر Job ناتمام وجود دارد
-    existing = get_incomplete_job(uid, url)
-    if existing:
-        job_id, pl_title, total_tracks = existing
-        cur.execute("""
-            SELECT COUNT(*) FROM job_tracks WHERE job_id=? AND status='sent'
-        """, (job_id,))
-        done = cur.fetchone()[0]
+# =========================================================
+# =============== HANDLE SOUNDCLOUD LINK ==================
+# =========================================================
+
+async def handle_soundcloud_link(update, context, uid, url):
+    msg = await update.message.reply_text("🔍 در حال بررسی لینک…")
+
+    # بررسی Resume
+    job = await get_incomplete_job(uid, url)
+    if job:
         kb = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton(f"▶️ ادامه از ترک {done+1}", callback_data=f"resume:{job_id}"),
-                InlineKeyboardButton("🔄 شروع از اول", callback_data=f"restart:{job_id}")
+                InlineKeyboardButton("▶️ ادامه", callback_data=f"resume:{job['job_id']}"),
+                InlineKeyboardButton("🔄 از اول", callback_data=f"restart:{job['job_id']}")
             ]
         ])
-        return await info_msg.edit_text(
-            f"⏸ یک پردازش ناتمام برای این پلی‌لیست وجود دارد.\n\n"
-            f"📀 {pl_title}\n"
-            f"✔️ انجام‌شده: {done}/{total_tracks}\n\n"
-            "می‌خوای ادامه بدم یا از اول شروع کنم؟",
+        return await msg.edit_text(
+            f"⏸ یک پردازش ناتمام برای این پلی‌لیست پیدا شد:\n\n"
+            f"🎵 {job['playlist_title']}\n"
+            f"تعداد ترک‌ها: {job['total_tracks']}\n\n"
+            "می‌خواهی ادامه بدهم یا از اول شروع کنم؟",
             reply_markup=kb
         )
 
-    # تحلیل اولیه پلی‌لیست/ست/تک ترک
+    # دریافت اطلاعات پلی‌لیست
     try:
-        json_raw = os.popen(f'yt-dlp -J "{url}"').read()
-        data = json.loads(json_raw)
+        import yt_dlp
+        ydl_opts = {"quiet": True, "extract_flat": True}
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
     except Exception as e:
-        logging.error(f"yt-dlp -J error: {e}")
-        return await info_msg.edit_text("❌ خطا در تحلیل لینک SoundCloud.")
+        logging.error(e)
+        return await msg.edit_text("❌ خطا در دریافت اطلاعات پلی‌لیست.")
+
+    if "entries" not in info or not info["entries"]:
+        return await msg.edit_text("❌ این لینک پلی‌لیست معتبر نیست.")
 
     tracks = []
-    playlist_title = data.get("title") or "SoundCloud"
-    if "entries" in data and data["entries"]:
-        for entry in data["entries"]:
-            t_title = entry.get("title") or "Track"
-            t_url = entry.get("webpage_url") or entry.get("url") or url
-            tracks.append({"title": t_title, "url": t_url})
-    else:
-        t_title = data.get("title") or "Track"
-        tracks.append({"title": t_title, "url": url})
+    for e in info["entries"]:
+        if not e:
+            continue
+        title = clean_filename(e.get("title") or "track")
+        turl = e.get("url") or e.get("webpage_url")
+        if turl:
+            tracks.append({"title": title, "url": turl})
 
-    total = len(tracks)
-    logging.info(f"[Playlist] User {uid} - {total} tracks detected from SoundCloud.")
+    if not tracks:
+        return await msg.edit_text("❌ هیچ ترک معتبری پیدا نشد.")
 
-    # ساخت Job جدید برای Resume
+    playlist_title = clean_filename(info.get("title") or "playlist")
     job_id = uuid4().hex
-    create_job(job_id, uid, playlist_title, url, total)
-    create_job_tracks(job_id, tracks)
 
-    # پیش‌نمایش ترک‌ها
-    lines = []
-    max_preview = min(total, 50)
-    for i in range(max_preview):
-        lines.append(f"{i+1}. {tracks[i]['title']}")
-    if total > max_preview:
-        lines.append(f"... و {total - max_preview} ترک دیگر")
+    pending_playlists[uid] = {
+        "job_id": job_id,
+        "playlist_title": playlist_title,
+        "tracks": tracks,
+        "chat_id": update.message.chat_id,
+        "await_selection": False,
+        "status_msg_id": None,
+        "url": url
+    }
 
     kb = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("📥 دانلود همه", callback_data=f"pl_all:{job_id}"),
-            InlineKeyboardButton("🎯 انتخاب دستی", callback_data=f"pl_select:{job_id}")
+            InlineKeyboardButton("✏️ انتخاب دستی", callback_data=f"pl_select:{job_id}")
         ]
     ])
 
-    await info_msg.edit_text(
-        f"📀 نام پلی‌لیست / ست: {playlist_title}\n"
-        f"🎧 تعداد ترک‌ها: {total}\n"
-        f"🎚 کیفیت انتخابی: {user_quality}\n\n"
-        "🎵 لیست ترک‌ها:\n" +
-        "\n".join(lines),
+    await msg.edit_text(
+        f"🎵 *{playlist_title}*\n"
+        f"تعداد ترک‌ها: {len(tracks)}\n\n"
+        "می‌خواهی همه را دانلود کنم یا خودت انتخاب می‌کنی؟",
+        reply_markup=kb,
+        parse_mode="Markdown"
+    )
+
+
+# =========================================================
+# =============== PROCESS PLAYLIST (NEW JOB) ==============
+# =========================================================
+
+async def process_playlist(uid, context, pl, selected_indices):
+    job_id = pl["job_id"]
+    tracks = pl["tracks"]
+    playlist_title = pl["playlist_title"]
+    url = pl["url"]
+    chat_id = pl["chat_id"]
+    status_msg_id = pl["status_msg_id"]
+
+    await create_job(job_id, uid, playlist_title, url, len(tracks))
+
+    selected_tracks = [tracks[i] for i in selected_indices]
+    await create_job_tracks(job_id, selected_tracks)
+
+    await context.bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=status_msg_id,
+        text=f"▶️ شروع پردازش پلی‌لیست…\n"
+             f"🎵 {playlist_title}\n"
+             f"تعداد انتخاب‌شده: {len(selected_tracks)}"
+    )
+
+    for idx, t in enumerate(selected_tracks):
+        try:
+            await process_single_track(uid, context, job_id, idx, t, chat_id, status_msg_id)
+        except Exception as e:
+            logging.error(f"Track error: {e}")
+
+    await finish_job(job_id)
+
+    await context.bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=status_msg_id,
+        text=f"✅ پردازش پلی‌لیست تمام شد.\n🎵 {playlist_title}"
+    )
+
+    pending_playlists.pop(uid, None)
+
+
+# =========================================================
+# =============== PROCESS PLAYLIST (RESUME) ===============
+# =========================================================
+
+async def process_playlist_job_resume(uid, context, job_id, pending):
+    # pending = [(index, title), ...]
+    for index, title in pending:
+        try:
+            await process_single_track_resume(uid, context, job_id, index, title)
+        except Exception as e:
+            logging.error(f"Resume error: {e}")
+
+    await finish_job(job_id)
+
+
+# =========================================================
+# =============== PROCESS SINGLE TRACK ====================
+# =========================================================
+
+async def process_single_track(uid, context, job_id, index, track, chat_id, status_msg_id):
+    title = track["title"]
+    url = track["url"]
+
+    await context.bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=status_msg_id,
+        text=f"🎧 در حال دانلود:\n{title}"
+    )
+
+    import yt_dlp
+    q = await get_user_quality(uid)
+    fmt = get_format_for_quality(q)
+
+    uid_job = uuid4().hex
+    raw = f"{DOWNLOAD_DIR}/{uid_job}_in.mp3"
+    final = f"{DOWNLOAD_DIR}/{uid_job}_out.mp3"
+
+    try:
+        ydl_opts = {
+            "quiet": True,
+            "format": fmt,
+            "outtmpl": raw
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+
+        await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=status_msg_id,
+            text=f"🎨 افزودن کاور:\n{title}"
+        )
+
+        await tag_and_cover(raw, final, title)
+
+        size = os.path.getsize(final)
+        caption = f"🎵 {title}\n{make_playlist_hashtag(track['title'])}\n🔗 @{CHANNEL_USERNAME}"
+
+        with open(final, "rb") as f:
+            if size <= MAX_FILE_SIZE:
+                await context.bot.send_audio(CHANNEL_ID, f, filename=title + ".mp3", caption=caption)
+            else:
+                await context.bot.send_document(CHANNEL_ID, f, filename=title + ".mp3", caption=caption)
+
+        await mark_track_sent(job_id, index)
+        await add_history(uid, title, "soundcloud")
+
+    except Exception as e:
+        logging.error(e)
+
+    finally:
+        for p in (raw, final):
+            if os.path.exists(p):
+                os.remove(p)
+
+
+# =========================================================
+# =============== PROCESS SINGLE TRACK (RESUME) ===========
+# =========================================================
+
+async def process_single_track_resume(uid, context, job_id, index, title):
+    # این نسخه فقط برای Resume است
+    # چون URL در job_tracks ذخیره نشده، باید دوباره از Supabase بگیریم
+    res = await supabase.table("job_tracks") \
+        .select("title") \
+        .eq("job_id", job_id) \
+        .eq("track_index", index) \
+        .execute()
+
+    if not res.data:
+        return
+
+    # در Resume فقط عنوان داریم، URL را باید از jobs بگیریم
+    job = await supabase.table("jobs").select("source_url").eq("job_id", job_id).execute()
+    if not job.data:
+        return
+
+    url = job.data[0]["source_url"]
+
+    # دانلود مجدد
+    import yt_dlp
+    q = await get_user_quality(uid)
+    fmt = get_format_for_quality(q)
+
+    uid_job = uuid4().hex
+    raw = f"{DOWNLOAD_DIR}/{uid_job}_in.mp3"
+    final = f"{DOWNLOAD_DIR}/{uid_job}_out.mp3"
+
+    try:
+        ydl_opts = {"quiet": True, "format": fmt, "outtmpl": raw}
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+
+        await tag_and_cover(raw, final, title)
+
+        size = os.path.getsize(final)
+        caption = f"🎵 {title}\n🔗 @{CHANNEL_USERNAME}"
+
+        with open(final, "rb") as f:
+            if size <= MAX_FILE_SIZE:
+                await context.bot.send_audio(CHANNEL_ID, f, filename=title + ".mp3", caption=caption)
+            else:
+                await context.bot.send_document(CHANNEL_ID, f, filename=title + ".mp3", caption=caption)
+
+        await mark_track_sent(job_id, index)
+        await add_history(uid, title, "soundcloud")
+
+    except Exception as e:
+        logging.error(e)
+
+    finally:
+        for p in (raw, final):
+            if os.path.exists(p):
+                os.remove(p)
+
+
+# =========================================================
+# ======================== FORCE JOIN ======================
+# =========================================================
+
+async def is_member(uid, context):
+    try:
+        m = await context.bot.get_chat_member(CHANNEL_ID, uid)
+        return m.status in ("member", "administrator", "creator")
+    except:
+        return False
+
+async def force_join(update, context):
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📢 عضویت در کانال", url=f"https://t.me/{CHANNEL_USERNAME}")],
+        [InlineKeyboardButton("✔️ بررسی عضویت", callback_data="check_join")]
+    ])
+    await update.message.reply_text(
+        "برای استفاده از ربات باید عضو کانال شوید:",
         reply_markup=kb
     )
 
-    pending_playlists[uid] = {
-        "job_id": job_id,
-        "url": url,
-        "playlist_title": playlist_title,
-        "tracks": tracks,
-        "quality": user_quality,
-        "await_selection": False,
-        "status_msg_id": None,
-        "chat_id": update.message.chat_id,
-    }
 
-# ================= PLAYLIST PROCESSING =================
-async def process_playlist(uid: int, context: ContextTypes.DEFAULT_TYPE, pl: dict, indices):
-    job_id = pl["job_id"]
-    playlist_title = pl["playlist_title"]
-    tracks = pl["tracks"]
-    quality = pl["quality"]
-    total = len(indices)
-    status_msg_id = pl["status_msg_id"]
-    chat_id = pl["chat_id"]
+# =========================================================
+# =========================== MAIN =========================
+# =========================================================
 
-    fmt = get_format_for_quality(quality)
-    playlist_hashtag = make_playlist_hashtag(playlist_title)
-
-    logging.info(f"[Playlist] Start job {job_id} for user {uid}: {total} tracks.")
-
-    downloaded = 0
-    sent = 0
-
-    async def update_status(current_idx=None, phase="", current_title=""):
-        text = (
-            f"📀 پلی‌لیست: {playlist_title}\n"
-            f"{playlist_hashtag}  #playlist\n\n"
-            f"🎧 تعداد انتخاب‌شده: {total}\n"
-            f"⬇️ دانلود شده: {downloaded}/{total}\n"
-            f"📡 ارسال شده: {sent}/{total}\n"
-        )
-        if current_idx is not None:
-            text += f"\n🔄 ترک فعلی: {current_idx+1}/{total}\n"
-        if phase:
-            text += f"📍 مرحله: {phase}\n"
-        if current_title:
-            text += f"🎵 {current_title}"
-        try:
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=status_msg_id,
-                text=text
-            )
-        except Exception as e:
-            logging.warning(f"Status update failed: {e}")
-
-    try:
-        for pos, idx in enumerate(indices):
-            track = tracks[idx]
-            title = clean_filename(track["title"])
-            t_url = track["url"]
-
-            logging.info(f"[Playlist] ({pos+1}/{total}) Downloading: {title}")
-            await update_status(pos, "دانلود از SoundCloud", title)
-
-            uid_job = f"{job_id}_{idx}"
-            raw = f"{DOWNLOAD_DIR}/{uid_job}_in.raw"
-            final = f"{DOWNLOAD_DIR}/{uid_job}_out.mp3"
-
-            try:
-                await run_cmd("yt-dlp", "-f", fmt, "-o", raw, t_url)
-            except Exception as e:
-                logging.error(f"[Playlist] Download error for {title}: {e}")
-                continue
-
-            downloaded += 1
-            await update_status(pos, "تبدیل و افزودن کاور", title)
-            logging.info(f"[Playlist] ({pos+1}/{total}) Converting: {title}")
-
-            try:
-                await tag_and_cover(raw, final, title)
-            except Exception as e:
-                logging.error(f"[Playlist] tag_and_cover error for {title}: {e}")
-                continue
-            finally:
-                if os.path.exists(raw):
-                    try:
-                        os.remove(raw)
-                    except:
-                        pass
-
-            size = os.path.getsize(final)
-            caption = (
-                f"{playlist_hashtag}\n"
-                f"#playlist\n"
-                f"📀 {playlist_title}\n"
-                f"🎵 {title}\n"
-                f"🔗 @{CHANNEL_USERNAME}"
-            )
-
-            await update_status(pos, "ارسال به کانال", title)
-            logging.info(f"[Playlist] ({pos+1}/{total}) Sending: {title}")
-
-            with open(final, "rb") as f:
-                try:
-                    if size <= MAX_FILE_SIZE:
-                        await context.bot.send_audio(CHANNEL_ID, f, filename=title + ".mp3", caption=caption)
-                    else:
-                        await context.bot.send_document(CHANNEL_ID, f, filename=title + ".mp3", caption=caption)
-                    sent += 1
-                    add_history(uid, title, playlist_title)
-                    mark_track_sent(job_id, idx)
-                except Exception as e:
-                    logging.error(f"[Playlist] Send error for {title}: {e}")
-                finally:
-                    try:
-                        if os.path.exists(final):
-                            os.remove(final)
-                    except:
-                        pass
-
-            await update_status(pos, "اتمام ترک فعلی", title)
-
-        finish_job(job_id)
-        await update_status(None, "تمام شد", "")
-        logging.info(f"[Playlist] Job {job_id} finished. Sent {sent}/{total} tracks.")
-    except Exception as e:
-        logging.error(f"[Playlist] Fatal error in process_playlist: {e}")
-        try:
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=status_msg_id,
-                text="❌ خطایی در پردازش پلی‌لیست رخ داد."
-            )
-        except:
-            pass
-    finally:
-        if uid in pending_playlists:
-            del pending_playlists[uid]
-
-async def process_playlist_job_resume(uid: int, context: ContextTypes.DEFAULT_TYPE, job_id: str, pending_indices_with_titles):
-    cur.execute("SELECT playlist_title, source_url, total_tracks FROM jobs WHERE job_id=?", (job_id,))
-    row = cur.fetchone()
-    if not row:
-        return
-    playlist_title, url, total_tracks = row
-    playlist_hashtag = make_playlist_hashtag(playlist_title)
-
-    chat_id = uid
-    msg = await context.bot.send_message(chat_id, "🔄 ادامهٔ پردازش پلی‌لیست…")
-
-    quality = get_user_quality(uid)
-    fmt = get_format_for_quality(quality)
-
-    # دوباره info کامل پلی‌لیست را می‌گیریم تا URLهای تکی ترک‌ها را داشته باشیم
-    json_raw = os.popen(f'yt-dlp -J "{url}"').read()
-    data = json.loads(json_raw)
-    all_tracks = []
-    if "entries" in data and data["entries"]:
-        for entry in data["entries"]:
-            t_title = entry.get("title") or "Track"
-            t_url = entry.get("webpage_url") or entry.get("url") or url
-            all_tracks.append({"title": t_title, "url": t_url})
-    else:
-        t_title = data.get("title") or "Track"
-        all_tracks.append({"title": t_title, "url": url})
-
-    total_pending = len(pending_indices_with_titles)
-    sent = 0
-
-    for i, (idx, title_from_db) in enumerate(pending_indices_with_titles):
-        if idx >= len(all_tracks):
-            continue
-        track = all_tracks[idx]
-        title = clean_filename(track["title"])
-        t_url = track["url"]
-
-        await msg.edit_text(
-            f"▶️ ادامهٔ پردازش پلی‌لیست\n\n"
-            f"📀 {playlist_title}\n"
-            f"{playlist_hashtag} #playlist\n\n"
-            f"🔄 ترک {i+1}/{total_pending}\n"
-            f"🎵 {title}\n"
-            f"📡 در حال دانلود…"
-        )
-
-        uid_job = f"{job_id}_{idx}"
-        raw = f"{DOWNLOAD_DIR}/{uid_job}_in.raw"
-        final = f"{DOWNLOAD_DIR}/{uid_job}_out.mp3"
-
-        try:
-            await run_cmd("yt-dlp", "-f", fmt, "-o", raw, t_url)
-            await msg.edit_text(
-                f"▶️ ادامهٔ پردازش پلی‌لیست\n\n"
-                f"📀 {playlist_title}\n"
-                f"{playlist_hashtag} #playlist\n\n"
-                f"🎵 {title}\n"
-                f"🎧 در حال تبدیل و افزودن کاور…"
-            )
-            await tag_and_cover(raw, final, title)
-
-            caption = (
-                f"{playlist_hashtag}\n"
-                f"#playlist\n"
-                f"📀 {playlist_title}\n"
-                f"🎵 {title}\n"
-                f"🔗 @{CHANNEL_USERNAME}"
-            )
-            size = os.path.getsize(final)
-
-            with open(final, "rb") as f:
-                if size <= MAX_FILE_SIZE:
-                    await context.bot.send_audio(CHANNEL_ID, f, filename=title + ".mp3", caption=caption)
-                else:
-                    await context.bot.send_document(CHANNEL_ID, f, filename=title + ".mp3", caption=caption)
-
-            mark_track_sent(job_id, idx)
-            add_history(uid, title, playlist_title)
-            sent += 1
-        except Exception as e:
-            logging.error(f"[Resume] Error for track {title}: {e}")
-        finally:
-            for p in (raw, final):
-                if os.path.exists(p):
-                    os.remove(p)
-
-    finish_job(job_id)
-    await msg.edit_text(
-        f"✅ ادامهٔ پردازش پلی‌لیست با موفقیت انجام شد.\n"
-        f"📀 {playlist_title}\n"
-        f"🎧 {sent}/{total_pending} ترک باقی‌مانده ارسال شد."
-    )
-    logging.info(f"[Resume] Job {job_id} resume finished. Sent {sent}/{total_pending} tracks.")
-
-# ================= MAIN =================
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
@@ -937,9 +899,11 @@ def main():
 
     app.run_webhook(
         listen="0.0.0.0",
-        port=int(os.getenv("PORT", 10000)),
-        webhook_url=BASE_URL
+        port=int(os.getenv("PORT", 8080)),
+        url_path=BOT_TOKEN,
+        webhook_url=f"{BASE_URL}/{BOT_TOKEN}"
     )
+
 
 if __name__ == "__main__":
     main()
