@@ -182,9 +182,23 @@ def get_format_for_quality(q: str) -> str:
 
 
 def make_playlist_hashtag(title: str) -> str:
-    t = re.sub(r'\s+', '', title)
-    t = re.sub(r'[^\w\u0600-\u06FF]+', '', t)
-    return f"#{t}" if t else "#playlist"
+    # فقط حروف فارسی/انگلیسی/عدد/فاصله/زیرخط را نگه می‌داریم
+    cleaned = re.sub(r'[^\w\u0600-\u06FF\s]+', '', title)
+
+    # تبدیل فاصله‌ها به زیرخط
+    cleaned = re.sub(r'\s+', '_', cleaned).strip('_')
+
+    # کوتاه‌سازی اگر خیلی طولانی بود (مثلاً فقط ۴ کلمه اول)
+    parts = cleaned.split('_')
+    if len(parts) > 4:
+        cleaned = '_'.join(parts[:4])
+
+    # اگر خالی شد، fallback
+    if not cleaned:
+        cleaned = "playlist"
+
+    return f"#{cleaned}"
+
 
 
 def parse_selection(text: str, max_n: int):
