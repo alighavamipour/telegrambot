@@ -1,5 +1,5 @@
 # =========================================================
-# bot.py - SOUNDLOUD PRO BOT (PLAYLIST + SET + QUALITY + HISTORY)
+# bot.py - SOUNDLOUD PRO BOT (PLAYLIST + SET + QUALITY + HISTORY + RESUME)
 # =========================================================
 
 import os
@@ -61,13 +61,37 @@ cur.execute("""
         quality TEXT
     )
 """)
+
+# برای Resume پلی‌لیست / ست
+cur.execute("""
+    CREATE TABLE IF NOT EXISTS jobs (
+        job_id TEXT PRIMARY KEY,
+        user_id INTEGER,
+        playlist_title TEXT,
+        source_url TEXT,
+        total_tracks INTEGER,
+        status TEXT,
+        created_at TEXT,
+        updated_at TEXT
+    )
+""")
+
+cur.execute("""
+    CREATE TABLE IF NOT EXISTS job_tracks (
+        job_id TEXT,
+        track_index INTEGER,
+        title TEXT,
+        status TEXT,
+        PRIMARY KEY (job_id, track_index)
+    )
+""")
+
 conn.commit()
 
-
+# ================= BASIC DB HELPERS =================
 def save_user(uid: int):
     cur.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (uid,))
     conn.commit()
-
 
 def set_user_quality(uid: int, quality: str):
     cur.execute(
@@ -77,12 +101,10 @@ def set_user_quality(uid: int, quality: str):
     )
     conn.commit()
 
-
 def get_user_quality(uid: int) -> str:
     cur.execute("SELECT quality FROM settings WHERE user_id=?", (uid,))
     row = cur.fetchone()
     return row[0] if row and row[0] else "best"
-
 
 def add_history(uid: int, title: str, source: str):
     cur.execute(
@@ -91,7 +113,6 @@ def add_history(uid: int, title: str, source: str):
     )
     conn.commit()
 
-
 def get_history(uid: int, limit: int = 10):
     cur.execute(
         "SELECT title, source, created_at FROM history WHERE user_id=? ORDER BY id DESC LIMIT ?",
@@ -99,12 +120,74 @@ def get_history(uid: int, limit: int = 10):
     )
     return cur.fetchall()
 
+# ================= RESUME HELPERS =================
+def create_job(job_id, user_id, playlist_title, url, total_tracks):
+    cur.execute("""
+        INSERT OR REPLACE INTO jobs 
+        (job_id, user_id, playlist_title, source_url, total_tracks, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 'running', datetime('now'), datetime('now'))
+    """, (job_id, user_id, playlist_title, url, total_tracks))
+    conn.commit()
+
+def create_job_tracks(job_id, tracks):
+    for idx, t in enumerate(tracks):
+        cur.execute("""
+            INSERT OR REPLACE INTO job_tracks (job_id, track_index, title, status)
+            VALUES (?, ?, ?, COALESCE(
+                (SELECT status FROM job_tracks WHERE job_id=? AND track_index=?),
+                'pending'
+            ))
+        """, (job_id, idx, t["title"], job_id, idx))
+    conn.commit()
+
+def get_incomplete_job(user_id, url):
+    cur.execute("""
+        SELECT job_id, playlist_title, total_tracks 
+        FROM jobs 
+        WHERE user_id=? AND source_url=? AND status='running'
+    """, (user_id, url))
+    return cur.fetchone()
+
+def get_pending_indices_for_job(job_id):
+    cur.execute("""
+        SELECT track_index, title 
+        FROM job_tracks 
+        WHERE job_id=? AND status!='sent'
+        ORDER BY track_index ASC
+    """, (job_id,))
+    rows = cur.fetchall()
+    return [(r[0], r[1]) for r in rows]
+
+def mark_track_sent(job_id, index):
+    cur.execute("""
+        UPDATE job_tracks 
+        SET status='sent' 
+        WHERE job_id=? AND track_index=?
+    """, (job_id, index))
+    cur.execute("""
+        UPDATE jobs 
+        SET updated_at=datetime('now')
+        WHERE job_id=?
+    """, (job_id,))
+    conn.commit()
+
+def finish_job(job_id):
+    cur.execute("""
+        UPDATE jobs 
+        SET status='finished', updated_at=datetime('now')
+        WHERE job_id=?
+    """, (job_id,))
+    conn.commit()
+
+def reset_job(job_id):
+    cur.execute("DELETE FROM job_tracks WHERE job_id=?", (job_id,))
+    cur.execute("DELETE FROM jobs WHERE job_id=?", (job_id,))
+    conn.commit()
 
 # ================= UTILS =================
 def clean_filename(name: str) -> str:
     name = re.sub(r'\.(mp3|m4a|wav|flac|ogg|opus)$', '', name, flags=re.I)
     return name.strip() or "music"
-
 
 def guess_ext(audio_obj) -> str:
     if getattr(audio_obj, "file_name", None):
@@ -127,9 +210,7 @@ def guess_ext(audio_obj) -> str:
         return "opus"
     if "m4a" in mime or "mp4" in mime:
         return "m4a"
-
     return "mp3"
-
 
 async def run_cmd(*cmd):
     proc = await asyncio.create_subprocess_exec(
@@ -138,7 +219,6 @@ async def run_cmd(*cmd):
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
         raise Exception(stderr.decode() or stdout.decode())
-
 
 async def tag_and_cover(src: str, dst: str, title: str):
     await run_cmd(
@@ -159,7 +239,6 @@ async def tag_and_cover(src: str, dst: str, title: str):
         dst
     )
 
-
 def resolve_soundcloud_url(url: str) -> str:
     try:
         r = requests.get(url, allow_redirects=True, timeout=10)
@@ -170,7 +249,6 @@ def resolve_soundcloud_url(url: str) -> str:
         logging.warning(f"resolve_soundcloud_url failed: {e}")
         return url
 
-
 def get_format_for_quality(q: str) -> str:
     if q == "128":
         return "bestaudio[abr<=128]/bestaudio"
@@ -180,26 +258,15 @@ def get_format_for_quality(q: str) -> str:
         return "bestaudio[abr>=256]/bestaudio[abr>=192]/bestaudio"
     return "bestaudio/best"
 
-
 def make_playlist_hashtag(title: str) -> str:
-    # فقط حروف فارسی/انگلیسی/عدد/فاصله/زیرخط را نگه می‌داریم
     cleaned = re.sub(r'[^\w\u0600-\u06FF\s]+', '', title)
-
-    # تبدیل فاصله‌ها به زیرخط
     cleaned = re.sub(r'\s+', '_', cleaned).strip('_')
-
-    # کوتاه‌سازی اگر خیلی طولانی بود (مثلاً فقط ۴ کلمه اول)
     parts = cleaned.split('_')
     if len(parts) > 4:
         cleaned = '_'.join(parts[:4])
-
-    # اگر خالی شد، fallback
     if not cleaned:
         cleaned = "playlist"
-
     return f"#{cleaned}"
-
-
 
 def parse_selection(text: str, max_n: int):
     result = set()
@@ -227,11 +294,9 @@ def parse_selection(text: str, max_n: int):
                 continue
     return sorted(result)
 
-
 # ================= QUEUE =================
 queue: asyncio.Queue = asyncio.Queue()
-CONCURRENCY = 3
-
+CONCURRENCY = 2  # کمی کمتر برای فشار کمتر روی Render
 
 async def worker():
     try:
@@ -246,12 +311,10 @@ async def worker():
     except asyncio.CancelledError:
         logging.info("Worker stopped.")
 
-
 async def start_workers(app: Application):
     for _ in range(CONCURRENCY):
         asyncio.create_task(worker())
     logging.info("Workers started.")
-
 
 # ================= FORCE JOIN =================
 async def is_member(uid: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -260,7 +323,6 @@ async def is_member(uid: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
         return m.status in ("member", "administrator", "creator")
     except:
         return False
-
 
 async def force_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = InlineKeyboardMarkup([
@@ -273,14 +335,8 @@ async def force_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=kb
         )
 
-
-# ================= STATE: PENDING PLAYLISTS =================
-pending_playlists = {}
-# ساختار:
-# {user_id: {"job_id": str, "url": str, "playlist_title": str,
-#            "tracks": [ {title,url} ], "quality": str,
-#            "await_selection": bool, "status_msg_id": int, "chat_id": int}}
-
+# ================= STATE =================
+pending_playlists = {}  # {user_id: {...}}
 
 # ================= CALLBACK HANDLER =================
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -322,6 +378,31 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         return
 
+    # ادامه / ری‌استارت Job
+    if data.startswith("resume:"):
+        job_id = data.split(":", 1)[1]
+        pending = get_pending_indices_for_job(job_id)
+        if not pending:
+            return await q.edit_message_text("❌ هیچ ترک ناتمامی برای این پلی‌لیست پیدا نشد.")
+
+        await q.edit_message_text("▶️ ادامهٔ پردازش پلی‌لیست… در حال آماده‌سازی…")
+
+        async def task():
+            await process_playlist_job_resume(uid, context, job_id, pending)
+
+        await queue.put(task)
+        return
+
+    if data.startswith("restart:"):
+        job_id = data.split(":", 1)[1]
+        reset_job(job_id)
+        try:
+            await q.edit_message_text("🔄 پردازش از اول شروع می‌شود.\nلطفاً دوباره لینک را ارسال کن.")
+        except:
+            pass
+        return
+
+    # انتخاب پلی‌لیست (همه / دستی)
     if data.startswith("pl_all:") or data.startswith("pl_select:"):
         if uid not in pending_playlists:
             try:
@@ -370,7 +451,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except:
                 pass
 
-
 # ================= COMMANDS =================
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.from_user:
@@ -388,7 +468,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "برای انتخاب کیفیت SoundCloud: /quality"
     )
 
-
 async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.from_user:
         return
@@ -403,7 +482,6 @@ async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         src = source if source != "forwarded" else "فایل فورواردی / آپلود"
         lines.append(f"• {title}\n  ↳ {src}")
     await update.message.reply_text("🕘 آخرین موزیک‌های پردازش‌شده:\n\n" + "\n\n".join(lines))
-
 
 async def quality_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.from_user:
@@ -428,8 +506,7 @@ async def quality_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=kb
     )
 
-
-# ================= FORWARDED / UPLOADED AUDIO =================
+# ================= AUDIO HANDLER =================
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.from_user:
         return
@@ -490,13 +567,10 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await queue.put(task)
 
-
-# ================= SOUNDLOUD PLAYLIST / SET HANDLING =================
+# ================= SOUNDLOUD PLAYLIST / SET =================
 SC_REGEX = re.compile(r"https?://(?:on\.)?soundcloud\.com/[^\s]+")
 
-
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ایمن‌سازی در برابر callback/service update
     if not update.message or not update.message.from_user:
         return
 
@@ -507,7 +581,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_member(uid, context):
         return await force_join(update, context)
 
-    # اگر کاربر در حالت انتخاب دستی پلی‌لیست است
+    # اگر در حالت انتخاب دستی پلی‌لیست هست
     if uid in pending_playlists and pending_playlists[uid].get("await_selection"):
         pl = pending_playlists[uid]
         total = len(pl["tracks"])
@@ -533,7 +607,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await queue.put(task)
         return
 
-    # اگر لینک SoundCloud است
+    # لینک SoundCloud
     m = SC_REGEX.search(text)
     if not m:
         return await update.message.reply_text("⚠️ فقط لینک‌های SoundCloud پشتیبانی می‌شوند.")
@@ -541,10 +615,32 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raw_url = m.group(0)
     url = resolve_soundcloud_url(raw_url)
     user_quality = get_user_quality(uid)
-    fmt = get_format_for_quality(user_quality)
 
     info_msg = await update.message.reply_text("🔍 در حال تحلیل لینک SoundCloud…")
 
+    # اگر Job ناتمام وجود دارد
+    existing = get_incomplete_job(uid, url)
+    if existing:
+        job_id, pl_title, total_tracks = existing
+        cur.execute("""
+            SELECT COUNT(*) FROM job_tracks WHERE job_id=? AND status='sent'
+        """, (job_id,))
+        done = cur.fetchone()[0]
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(f"▶️ ادامه از ترک {done+1}", callback_data=f"resume:{job_id}"),
+                InlineKeyboardButton("🔄 شروع از اول", callback_data=f"restart:{job_id}")
+            ]
+        ])
+        return await info_msg.edit_text(
+            f"⏸ یک پردازش ناتمام برای این پلی‌لیست وجود دارد.\n\n"
+            f"📀 {pl_title}\n"
+            f"✔️ انجام‌شده: {done}/{total_tracks}\n\n"
+            "می‌خوای ادامه بدم یا از اول شروع کنم؟",
+            reply_markup=kb
+        )
+
+    # تحلیل اولیه پلی‌لیست/ست/تک ترک
     try:
         json_raw = os.popen(f'yt-dlp -J "{url}"').read()
         data = json.loads(json_raw)
@@ -566,6 +662,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total = len(tracks)
     logging.info(f"[Playlist] User {uid} - {total} tracks detected from SoundCloud.")
 
+    # ساخت Job جدید برای Resume
+    job_id = uuid4().hex
+    create_job(job_id, uid, playlist_title, url, total)
+    create_job_tracks(job_id, tracks)
+
+    # پیش‌نمایش ترک‌ها
     lines = []
     max_preview = min(total, 50)
     for i in range(max_preview):
@@ -575,8 +677,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     kb = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📥 دانلود همه", callback_data=f"pl_all:{uid}"),
-            InlineKeyboardButton("🎯 انتخاب دستی", callback_data=f"pl_select:{uid}")
+            InlineKeyboardButton("📥 دانلود همه", callback_data=f"pl_all:{job_id}"),
+            InlineKeyboardButton("🎯 انتخاب دستی", callback_data=f"pl_select:{job_id}")
         ]
     ])
 
@@ -590,7 +692,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     pending_playlists[uid] = {
-        "job_id": str(uid),
+        "job_id": job_id,
         "url": url,
         "playlist_title": playlist_title,
         "tracks": tracks,
@@ -600,7 +702,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "chat_id": update.message.chat_id,
     }
 
-
+# ================= PLAYLIST PROCESSING =================
 async def process_playlist(uid: int, context: ContextTypes.DEFAULT_TYPE, pl: dict, indices):
     job_id = pl["job_id"]
     playlist_title = pl["playlist_title"]
@@ -613,7 +715,7 @@ async def process_playlist(uid: int, context: ContextTypes.DEFAULT_TYPE, pl: dic
     fmt = get_format_for_quality(quality)
     playlist_hashtag = make_playlist_hashtag(playlist_title)
 
-    logging.info(f"[Playlist] Start processing job {job_id} for user {uid}: {total} tracks.")
+    logging.info(f"[Playlist] Start job {job_id} for user {uid}: {total} tracks.")
 
     downloaded = 0
     sent = 0
@@ -639,7 +741,7 @@ async def process_playlist(uid: int, context: ContextTypes.DEFAULT_TYPE, pl: dic
                 text=text
             )
         except Exception as e:
-            logging.warning(f"Status message update failed: {e}")
+            logging.warning(f"Status update failed: {e}")
 
     try:
         for pos, idx in enumerate(indices):
@@ -648,7 +750,7 @@ async def process_playlist(uid: int, context: ContextTypes.DEFAULT_TYPE, pl: dic
             t_url = track["url"]
 
             logging.info(f"[Playlist] ({pos+1}/{total}) Downloading: {title}")
-            await update_status(pos, "دانلود فایل از SoundCloud", title)
+            await update_status(pos, "دانلود از SoundCloud", title)
 
             uid_job = f"{job_id}_{idx}"
             raw = f"{DOWNLOAD_DIR}/{uid_job}_in.raw"
@@ -686,7 +788,7 @@ async def process_playlist(uid: int, context: ContextTypes.DEFAULT_TYPE, pl: dic
             )
 
             await update_status(pos, "ارسال به کانال", title)
-            logging.info(f"[Playlist] ({pos+1}/{total}) Sending to channel: {title}")
+            logging.info(f"[Playlist] ({pos+1}/{total}) Sending: {title}")
 
             with open(final, "rb") as f:
                 try:
@@ -696,6 +798,7 @@ async def process_playlist(uid: int, context: ContextTypes.DEFAULT_TYPE, pl: dic
                         await context.bot.send_document(CHANNEL_ID, f, filename=title + ".mp3", caption=caption)
                     sent += 1
                     add_history(uid, title, playlist_title)
+                    mark_track_sent(job_id, idx)
                 except Exception as e:
                     logging.error(f"[Playlist] Send error for {title}: {e}")
                 finally:
@@ -707,6 +810,7 @@ async def process_playlist(uid: int, context: ContextTypes.DEFAULT_TYPE, pl: dic
 
             await update_status(pos, "اتمام ترک فعلی", title)
 
+        finish_job(job_id)
         await update_status(None, "تمام شد", "")
         logging.info(f"[Playlist] Job {job_id} finished. Sent {sent}/{total} tracks.")
     except Exception as e:
@@ -723,6 +827,99 @@ async def process_playlist(uid: int, context: ContextTypes.DEFAULT_TYPE, pl: dic
         if uid in pending_playlists:
             del pending_playlists[uid]
 
+async def process_playlist_job_resume(uid: int, context: ContextTypes.DEFAULT_TYPE, job_id: str, pending_indices_with_titles):
+    cur.execute("SELECT playlist_title, source_url, total_tracks FROM jobs WHERE job_id=?", (job_id,))
+    row = cur.fetchone()
+    if not row:
+        return
+    playlist_title, url, total_tracks = row
+    playlist_hashtag = make_playlist_hashtag(playlist_title)
+
+    chat_id = uid
+    msg = await context.bot.send_message(chat_id, "🔄 ادامهٔ پردازش پلی‌لیست…")
+
+    quality = get_user_quality(uid)
+    fmt = get_format_for_quality(quality)
+
+    # دوباره info کامل پلی‌لیست را می‌گیریم تا URLهای تکی ترک‌ها را داشته باشیم
+    json_raw = os.popen(f'yt-dlp -J "{url}"').read()
+    data = json.loads(json_raw)
+    all_tracks = []
+    if "entries" in data and data["entries"]:
+        for entry in data["entries"]:
+            t_title = entry.get("title") or "Track"
+            t_url = entry.get("webpage_url") or entry.get("url") or url
+            all_tracks.append({"title": t_title, "url": t_url})
+    else:
+        t_title = data.get("title") or "Track"
+        all_tracks.append({"title": t_title, "url": url})
+
+    total_pending = len(pending_indices_with_titles)
+    sent = 0
+
+    for i, (idx, title_from_db) in enumerate(pending_indices_with_titles):
+        if idx >= len(all_tracks):
+            continue
+        track = all_tracks[idx]
+        title = clean_filename(track["title"])
+        t_url = track["url"]
+
+        await msg.edit_text(
+            f"▶️ ادامهٔ پردازش پلی‌لیست\n\n"
+            f"📀 {playlist_title}\n"
+            f"{playlist_hashtag} #playlist\n\n"
+            f"🔄 ترک {i+1}/{total_pending}\n"
+            f"🎵 {title}\n"
+            f"📡 در حال دانلود…"
+        )
+
+        uid_job = f"{job_id}_{idx}"
+        raw = f"{DOWNLOAD_DIR}/{uid_job}_in.raw"
+        final = f"{DOWNLOAD_DIR}/{uid_job}_out.mp3"
+
+        try:
+            await run_cmd("yt-dlp", "-f", fmt, "-o", raw, t_url)
+            await msg.edit_text(
+                f"▶️ ادامهٔ پردازش پلی‌لیست\n\n"
+                f"📀 {playlist_title}\n"
+                f"{playlist_hashtag} #playlist\n\n"
+                f"🎵 {title}\n"
+                f"🎧 در حال تبدیل و افزودن کاور…"
+            )
+            await tag_and_cover(raw, final, title)
+
+            caption = (
+                f"{playlist_hashtag}\n"
+                f"#playlist\n"
+                f"📀 {playlist_title}\n"
+                f"🎵 {title}\n"
+                f"🔗 @{CHANNEL_USERNAME}"
+            )
+            size = os.path.getsize(final)
+
+            with open(final, "rb") as f:
+                if size <= MAX_FILE_SIZE:
+                    await context.bot.send_audio(CHANNEL_ID, f, filename=title + ".mp3", caption=caption)
+                else:
+                    await context.bot.send_document(CHANNEL_ID, f, filename=title + ".mp3", caption=caption)
+
+            mark_track_sent(job_id, idx)
+            add_history(uid, title, playlist_title)
+            sent += 1
+        except Exception as e:
+            logging.error(f"[Resume] Error for track {title}: {e}")
+        finally:
+            for p in (raw, final):
+                if os.path.exists(p):
+                    os.remove(p)
+
+    finish_job(job_id)
+    await msg.edit_text(
+        f"✅ ادامهٔ پردازش پلی‌لیست با موفقیت انجام شد.\n"
+        f"📀 {playlist_title}\n"
+        f"🎧 {sent}/{total_pending} ترک باقی‌مانده ارسال شد."
+    )
+    logging.info(f"[Resume] Job {job_id} resume finished. Sent {sent}/{total_pending} tracks.")
 
 # ================= MAIN =================
 def main():
@@ -743,7 +940,6 @@ def main():
         port=int(os.getenv("PORT", 10000)),
         webhook_url=BASE_URL
     )
-
 
 if __name__ == "__main__":
     main()
