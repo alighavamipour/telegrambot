@@ -18,7 +18,7 @@ BASE_URL = os.getenv("BASE_URL")
 
 DOWNLOAD_DIR = "downloads"
 COVER_PATH = "cover.jpg"
-MAX_FILE_SIZE = 50 * 1024 * 1024
+MAX_FILE_SIZE = 50 * 1024 * 1024  # محدودیت sendAudio تلگرام
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 # ================= LOGGING =================
@@ -38,6 +38,36 @@ def save_user(uid):
 def clean_filename(name):
     name = re.sub(r'\.(mp3|m4a|wav|flac|ogg|opus)$', '', name, flags=re.I)
     return name.strip() or "music"
+
+def guess_ext(audio_obj):
+    """
+    تشخیص پسوند از روی file_name و mime_type
+    """
+    # اول از روی file_name
+    if getattr(audio_obj, "file_name", None):
+        fn = audio_obj.file_name
+        if "." in fn:
+            return fn.split(".")[-1].lower()
+
+    # اگر filename نبود، از mime_type کمک می‌گیریم
+    mime = getattr(audio_obj, "mime_type", "") or ""
+    mime = mime.lower()
+
+    if "audio/mpeg" in mime or "audio/mp3" in mime:
+        return "mp3"
+    if "audio/x-wav" in mime or "audio/wav" in mime:
+        return "wav"
+    if "audio/flac" in mime:
+        return "flac"
+    if "audio/ogg" in mime:
+        return "ogg"
+    if "audio/opus" in mime:
+        return "opus"
+    if "audio/mp4" in mime or "audio/x-m4a" in mime:
+        return "m4a"
+
+    # آخرین راه
+    return "mp3"
 
 async def run_cmd(*cmd):
     proc = await asyncio.create_subprocess_exec(
@@ -115,10 +145,9 @@ async def worker():
             finally:
                 queue.task_done()
     except asyncio.CancelledError:
-        # Shutdown تمیز هنگام بسته شدن ربات
         logging.info("Worker task cancelled, shutting down worker.")
 
-# این تابع بعد از آماده شدن Application صدا زده می‌شود
+# بعد از آماده شدن اپلیکیشن، workerها را راه می‌اندازیم
 async def start_workers(app: Application):
     for _ in range(CONCURRENCY):
         asyncio.create_task(worker())
@@ -126,14 +155,24 @@ async def start_workers(app: Application):
 
 # ================= PROCESS AUDIO WITH COVER =================
 async def tag_and_cover(src, dst, title):
+    """
+    تبدیل هر فرمتی به mp3 با کاور و تگ کانال.
+    روی همه فایل‌ها اجرا می‌شود (حتی mp3).
+    """
     await run_cmd(
         "ffmpeg", "-y",
         "-i", src,
         "-i", COVER_PATH,
+        # فقط صدای ورودی و کاور را نگه می‌داریم
         "-map", "0:a", "-map", "1:v",
+        # حذف متادیتای قبلی
+        "-map_metadata", "-1",
+        # صدا همیشه با کیفیت خوب mp3 شود
         "-c:a", "libmp3lame",
         "-q:a", "2",
+        # تنظیم کاور به عنوان تصویر ضمیمه
         "-c:v", "mjpeg",
+        "-disposition:v", "attached_pic",
         "-id3v2_version", "3",
         "-metadata", f"title={title}",
         "-metadata", f"artist=@{CHANNEL_USERNAME}",
@@ -161,8 +200,8 @@ async def handle_audio(update, context):
         return await force_join(update, context)
 
     audio = update.message.audio or update.message.document
-    name = clean_filename(audio.file_name or "music")
-    ext = (audio.file_name or "").split(".")[-1].lower() if audio.file_name else "mp3"
+    name = clean_filename(getattr(audio, "file_name", "") or "music")
+    ext = guess_ext(audio)
 
     msg = await update.message.reply_text(
         f"✨ فایل «{name}.{ext}» با موفقیت دریافت شد.\n"
@@ -180,19 +219,14 @@ async def handle_audio(update, context):
             file = await audio.get_file()
             await file.download_to_drive(raw)
 
-            if ext != "mp3":
-                await msg.edit_text(
-                    "🎼 در حال تبدیل فایل به فرمت MP3 و افزودن کاور اختصاصی…\n"
-                    "کیفیت خروجی تضمین‌شده است."
-                )
-                success = await retry_task(lambda: tag_and_cover(raw, final, name))
-                if not success:
-                    await msg.edit_text("⚠️ متأسفانه پردازش فایل ناموفق بود.")
-                    return
-            else:
-                # اگر خود فایل mp3 بود، همان را استفاده می‌کنیم
-                nonlocal final
-                final = raw
+            await msg.edit_text(
+                "🎼 در حال تبدیل فایل و افزودن کاور اختصاصی…\n"
+                "کیفیت خروجی بالا و ثابت است."
+            )
+            success = await retry_task(lambda: tag_and_cover(raw, final, name))
+            if not success:
+                await msg.edit_text("⚠️ متأسفانه پردازش فایل ناموفق بود.")
+                return
 
             await msg.edit_text("📡 در حال انتقال فایل به کانال…\nفرآیند انتشار در حال انجام است.")
             size = os.path.getsize(final)
@@ -200,9 +234,10 @@ async def handle_audio(update, context):
 
             with open(final, "rb") as f:
                 if size <= MAX_FILE_SIZE:
-                    await context.bot.send_audio(CHANNEL_ID, f, filename=name, caption=caption)
+                    await context.bot.send_audio(CHANNEL_ID, f, filename=name + ".mp3", caption=caption)
                 else:
-                    await context.bot.send_document(CHANNEL_ID, f, caption=caption)
+                    # برای فایل‌های بالای 50 مگ، بدون کاهش کیفیت به‌صورت document ارسال می‌شود
+                    await context.bot.send_document(CHANNEL_ID, f, filename=name + ".mp3", caption=caption)
 
             await msg.edit_text("✅ عملیات با موفقیت به پایان رسید.\nفایل شما اکنون در کانال منتشر شده است.")
         except Exception as e:
@@ -211,6 +246,14 @@ async def handle_audio(update, context):
                 await msg.edit_text("❌ خطایی در پردازش فایل رخ داد.")
             except:
                 pass
+        finally:
+            # پاک کردن فایل‌های موقت
+            for path in (raw, final):
+                try:
+                    if os.path.exists(path):
+                        os.remove(path)
+                except Exception as e:
+                    logging.warning(f"Error removing temp file {path}: {e}")
 
     await queue.put(task)
 
@@ -274,9 +317,9 @@ async def handle_links(update, context):
 
             with open(final, "rb") as f:
                 if size <= MAX_FILE_SIZE:
-                    await context.bot.send_audio(CHANNEL_ID, f, filename=title, caption=caption)
+                    await context.bot.send_audio(CHANNEL_ID, f, filename=title + ".mp3", caption=caption)
                 else:
-                    await context.bot.send_document(CHANNEL_ID, f, caption=caption)
+                    await context.bot.send_document(CHANNEL_ID, f, filename=title + ".mp3", caption=caption)
 
             await msg.edit_text("✅ عملیات با موفقیت انجام شد.\nفایل شما اکنون در کانال قرار دارد.")
         except Exception as e:
@@ -285,6 +328,13 @@ async def handle_links(update, context):
                 await msg.edit_text("❌ خطایی در دانلود یا پردازش فایل رخ داد.")
             except:
                 pass
+        finally:
+            for path in (raw, final):
+                try:
+                    if os.path.exists(path):
+                        os.remove(path)
+                except Exception as e:
+                    logging.warning(f"Error removing temp file {path}: {e}")
 
     await queue.put(task)
 
