@@ -18,7 +18,7 @@ BASE_URL = os.getenv("BASE_URL")
 
 DOWNLOAD_DIR = "downloads"
 COVER_PATH = "cover.jpg"
-MAX_FILE_SIZE = 50 * 1024 * 1024  # محدودیت sendAudio تلگرام
+MAX_FILE_SIZE = 50 * 1024 * 1024  # محدودیت sendAudio تلگرام (نه sendDocument)
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 # ================= LOGGING =================
@@ -43,13 +43,11 @@ def guess_ext(audio_obj):
     """
     تشخیص پسوند از روی file_name و mime_type
     """
-    # اول از روی file_name
     if getattr(audio_obj, "file_name", None):
         fn = audio_obj.file_name
         if "." in fn:
             return fn.split(".")[-1].lower()
 
-    # اگر filename نبود، از mime_type کمک می‌گیریم
     mime = getattr(audio_obj, "mime_type", "") or ""
     mime = mime.lower()
 
@@ -66,7 +64,6 @@ def guess_ext(audio_obj):
     if "audio/mp4" in mime or "audio/x-m4a" in mime:
         return "m4a"
 
-    # آخرین راه
     return "mp3"
 
 async def run_cmd(*cmd):
@@ -147,7 +144,6 @@ async def worker():
     except asyncio.CancelledError:
         logging.info("Worker task cancelled, shutting down worker.")
 
-# بعد از آماده شدن اپلیکیشن، workerها را راه می‌اندازیم
 async def start_workers(app: Application):
     for _ in range(CONCURRENCY):
         asyncio.create_task(worker())
@@ -156,21 +152,21 @@ async def start_workers(app: Application):
 # ================= PROCESS AUDIO WITH COVER =================
 async def tag_and_cover(src, dst, title):
     """
-    تبدیل هر فرمتی به mp3 با کاور و تگ کانال.
-    روی همه فایل‌ها اجرا می‌شود (حتی mp3).
+    تبدیل هر ورودی به mp3 با کاور و تگ کانال.
+    ورودی و خروجی همیشه فایل‌های متفاوت هستند (نه in-place).
     """
     await run_cmd(
         "ffmpeg", "-y",
         "-i", src,
         "-i", COVER_PATH,
-        # فقط صدای ورودی و کاور را نگه می‌داریم
-        "-map", "0:a", "-map", "1:v",
-        # حذف متادیتای قبلی
+        # فقط صدای ورودی و تصویر کاور
+        "-map", "0:a:0", "-map", "1:v:0",
+        # حذف کامل متادیتا و کاورهای قبلی
         "-map_metadata", "-1",
-        # صدا همیشه با کیفیت خوب mp3 شود
+        # صدا: mp3 با کیفیت بالا (بدون کاهش جداگانه برای فایل‌های بزرگ)
         "-c:a", "libmp3lame",
         "-q:a", "2",
-        # تنظیم کاور به عنوان تصویر ضمیمه
+        # کاور به صورت attached_pic
         "-c:v", "mjpeg",
         "-disposition:v", "attached_pic",
         "-id3v2_version", "3",
@@ -210,8 +206,10 @@ async def handle_audio(update, context):
     )
 
     uid = uuid4().hex
-    raw = f"{DOWNLOAD_DIR}/{uid}.{ext}"
-    final = f"{DOWNLOAD_DIR}/{uid}.mp3"
+    # ورودی: هر فرمتی که هست
+    raw = f"{DOWNLOAD_DIR}/{uid}_in.{ext}"
+    # خروجی: همیشه mp3 و نام متفاوت از raw
+    final = f"{DOWNLOAD_DIR}/{uid}_out.mp3"
 
     async def task():
         try:
@@ -234,10 +232,20 @@ async def handle_audio(update, context):
 
             with open(final, "rb") as f:
                 if size <= MAX_FILE_SIZE:
-                    await context.bot.send_audio(CHANNEL_ID, f, filename=name + ".mp3", caption=caption)
+                    await context.bot.send_audio(
+                        CHAT_ID := CHANNEL_ID,
+                        audio=f,
+                        filename=name + ".mp3",
+                        caption=caption
+                    )
                 else:
-                    # برای فایل‌های بالای 50 مگ، بدون کاهش کیفیت به‌صورت document ارسال می‌شود
-                    await context.bot.send_document(CHANNEL_ID, f, filename=name + ".mp3", caption=caption)
+                    # برای فایل‌های بالای 50 مگ، بدون کاهش کیفیت به صورت document ارسال می‌شود
+                    await context.bot.send_document(
+                        CHAT_ID := CHANNEL_ID,
+                        document=f,
+                        filename=name + ".mp3",
+                        caption=caption
+                    )
 
             await msg.edit_text("✅ عملیات با موفقیت به پایان رسید.\nفایل شما اکنون در کانال منتشر شده است.")
         except Exception as e:
@@ -247,7 +255,6 @@ async def handle_audio(update, context):
             except:
                 pass
         finally:
-            # پاک کردن فایل‌های موقت
             for path in (raw, final):
                 try:
                     if os.path.exists(path):
@@ -282,8 +289,8 @@ async def handle_links(update, context):
     )
 
     uid = uuid4().hex
-    raw = f"{DOWNLOAD_DIR}/{uid}.raw"
-    final = f"{DOWNLOAD_DIR}/{uid}.mp3"
+    raw = f"{DOWNLOAD_DIR}/{uid}_in.raw"
+    final = f"{DOWNLOAD_DIR}/{uid}_out.mp3"
 
     async def task():
         try:
@@ -317,9 +324,19 @@ async def handle_links(update, context):
 
             with open(final, "rb") as f:
                 if size <= MAX_FILE_SIZE:
-                    await context.bot.send_audio(CHANNEL_ID, f, filename=title + ".mp3", caption=caption)
+                    await context.bot.send_audio(
+                        CHAT_ID := CHANNEL_ID,
+                        audio=f,
+                        filename=title + ".mp3",
+                        caption=caption
+                    )
                 else:
-                    await context.bot.send_document(CHANNEL_ID, f, filename=title + ".mp3", caption=caption)
+                    await context.bot.send_document(
+                        CHAT_ID := CHANNEL_ID,
+                        document=f,
+                        filename=title + ".mp3",
+                        caption=caption
+                    )
 
             await msg.edit_text("✅ عملیات با موفقیت انجام شد.\nفایل شما اکنون در کانال قرار دارد.")
         except Exception as e:
@@ -347,7 +364,6 @@ def main():
     app.add_handler(MessageHandler(filters.AUDIO | filters.Document.AUDIO, handle_audio))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_links))
 
-    # استارت شدن workerها بعد از آماده شدن اپلیکیشن
     app.post_init = start_workers
 
     app.run_webhook(
