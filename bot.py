@@ -2,7 +2,13 @@
 # bot.py - SOUNDLOUD PRO BOT (PLAYLIST + SET + QUALITY + HISTORY)
 # =========================================================
 
-import os, re, sqlite3, logging, asyncio, requests, json
+import os
+import re
+import sqlite3
+import logging
+import asyncio
+import requests
+import json
 from uuid import uuid4
 from datetime import datetime
 
@@ -57,9 +63,11 @@ cur.execute("""
 """)
 conn.commit()
 
+
 def save_user(uid: int):
     cur.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (uid,))
     conn.commit()
+
 
 def set_user_quality(uid: int, quality: str):
     cur.execute(
@@ -69,10 +77,12 @@ def set_user_quality(uid: int, quality: str):
     )
     conn.commit()
 
+
 def get_user_quality(uid: int) -> str:
     cur.execute("SELECT quality FROM settings WHERE user_id=?", (uid,))
     row = cur.fetchone()
     return row[0] if row and row[0] else "best"
+
 
 def add_history(uid: int, title: str, source: str):
     cur.execute(
@@ -81,6 +91,7 @@ def add_history(uid: int, title: str, source: str):
     )
     conn.commit()
 
+
 def get_history(uid: int, limit: int = 10):
     cur.execute(
         "SELECT title, source, created_at FROM history WHERE user_id=? ORDER BY id DESC LIMIT ?",
@@ -88,10 +99,12 @@ def get_history(uid: int, limit: int = 10):
     )
     return cur.fetchall()
 
+
 # ================= UTILS =================
 def clean_filename(name: str) -> str:
     name = re.sub(r'\.(mp3|m4a|wav|flac|ogg|opus)$', '', name, flags=re.I)
     return name.strip() or "music"
+
 
 def guess_ext(audio_obj) -> str:
     if getattr(audio_obj, "file_name", None):
@@ -117,6 +130,7 @@ def guess_ext(audio_obj) -> str:
 
     return "mp3"
 
+
 async def run_cmd(*cmd):
     proc = await asyncio.create_subprocess_exec(
         *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -124,6 +138,7 @@ async def run_cmd(*cmd):
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
         raise Exception(stderr.decode() or stdout.decode())
+
 
 async def tag_and_cover(src: str, dst: str, title: str):
     await run_cmd(
@@ -144,6 +159,7 @@ async def tag_and_cover(src: str, dst: str, title: str):
         dst
     )
 
+
 def resolve_soundcloud_url(url: str) -> str:
     try:
         r = requests.get(url, allow_redirects=True, timeout=10)
@@ -154,6 +170,7 @@ def resolve_soundcloud_url(url: str) -> str:
         logging.warning(f"resolve_soundcloud_url failed: {e}")
         return url
 
+
 def get_format_for_quality(q: str) -> str:
     if q == "128":
         return "bestaudio[abr<=128]/bestaudio"
@@ -163,17 +180,14 @@ def get_format_for_quality(q: str) -> str:
         return "bestaudio[abr>=256]/bestaudio[abr>=192]/bestaudio"
     return "bestaudio/best"
 
+
 def make_playlist_hashtag(title: str) -> str:
-    # حذف فاصله و کاراکترهای مشکل‌ساز
     t = re.sub(r'\s+', '', title)
-    t = re.sub(r'[^\w\u0600-\u06FF]+', '', t)  # حروف، عدد، زیرخط، فارسی
+    t = re.sub(r'[^\w\u0600-\u06FF]+', '', t)
     return f"#{t}" if t else "#playlist"
 
+
 def parse_selection(text: str, max_n: int):
-    """
-    ورودی مثل: 1,3,5-10
-    خروجی: لیست ایندکس‌های 0-based
-    """
     result = set()
     parts = text.replace(" ", "").split(",")
     for p in parts:
@@ -199,9 +213,11 @@ def parse_selection(text: str, max_n: int):
                 continue
     return sorted(result)
 
+
 # ================= QUEUE =================
 queue: asyncio.Queue = asyncio.Queue()
 CONCURRENCY = 3
+
 
 async def worker():
     try:
@@ -216,10 +232,12 @@ async def worker():
     except asyncio.CancelledError:
         logging.info("Worker stopped.")
 
+
 async def start_workers(app: Application):
     for _ in range(CONCURRENCY):
         asyncio.create_task(worker())
     logging.info("Workers started.")
+
 
 # ================= FORCE JOIN =================
 async def is_member(uid: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -229,36 +247,48 @@ async def is_member(uid: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
     except:
         return False
 
+
 async def force_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🔔 عضویت در کانال", url=f"https://t.me/{CHANNEL_USERNAME}")],
         [InlineKeyboardButton("✅ بررسی عضویت", callback_data="check_join")]
     ])
-    await update.message.reply_text(
-        "🔔 برای استفاده از ربات ابتدا عضو کانال شوید.",
-        reply_markup=kb
-    )
+    if update.message:
+        await update.message.reply_text(
+            "🔔 برای استفاده از ربات ابتدا عضو کانال شوید.",
+            reply_markup=kb
+        )
+
 
 # ================= STATE: PENDING PLAYLISTS =================
-# ساختار: {user_id: {"job_id": str, "url": str, "playlist_title": str, "tracks": [ {title,url} ], "quality": str, "await_selection": bool, "status_msg_id": int, "chat_id": int}}
 pending_playlists = {}
+# ساختار:
+# {user_id: {"job_id": str, "url": str, "playlist_title": str,
+#            "tracks": [ {title,url} ], "quality": str,
+#            "await_selection": bool, "status_msg_id": int, "chat_id": int}}
+
 
 # ================= CALLBACK HANDLER =================
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    data = q.data
+    if not q:
+        return
+
+    data = q.data or ""
     uid = q.from_user.id
     await q.answer()
 
     if data == "check_join":
         if await is_member(uid, context):
-            await q.edit_message_text("✅ عضویت تأیید شد. حالا فایل یا لینک ارسال کنید.")
+            try:
+                await q.edit_message_text("✅ عضویت تأیید شد. حالا فایل یا لینک ارسال کنید.")
+            except:
+                pass
         else:
             await q.answer("❌ هنوز عضو کانال نیستید.", show_alert=True)
         return
 
     if data.startswith("q_"):
-        # تغییر کیفیت
         q_val = data[2:]
         if q_val not in ("best", "128", "192", "320"):
             return
@@ -269,26 +299,40 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "192": "۱۹۲ kbps",
             "320": "۳۲۰ kbps",
         }
-        await q.edit_message_text(
-            f"🎚 کیفیت پیش‌فرض شما روی «{text_map[q_val]}» تنظیم شد.\n"
-            "از این به بعد لینک‌های SoundCloud با این کیفیت دانلود می‌شوند."
-        )
+        try:
+            await q.edit_message_text(
+                f"🎚 کیفیت پیش‌فرض شما روی «{text_map[q_val]}» تنظیم شد.\n"
+                "از این به بعد لینک‌های SoundCloud با این کیفیت دانلود می‌شوند."
+            )
+        except:
+            pass
         return
 
     if data.startswith("pl_all:") or data.startswith("pl_select:"):
         if uid not in pending_playlists:
-            return await q.edit_message_text("⛔ اطلاعات پلی‌لیست پیدا نشد. دوباره لینک را بفرست.")
+            try:
+                await q.edit_message_text("⛔ اطلاعات پلی‌لیست پیدا نشد. دوباره لینک را بفرست.")
+            except:
+                pass
+            return
 
         job_id = data.split(":", 1)[1]
         pl = pending_playlists.get(uid)
         if not pl or pl["job_id"] != job_id:
-            return await q.edit_message_text("⛔ این درخواست منقضی شده است. دوباره لینک را بفرست.")
+            try:
+                await q.edit_message_text("⛔ این درخواست منقضی شده است. دوباره لینک را بفرست.")
+            except:
+                pass
+            return
 
         if data.startswith("pl_all:"):
-            # دانلود همه ترک‌ها
             pl["await_selection"] = False
             pending_playlists[uid] = pl
-            await q.edit_message_text("✅ همهٔ ترک‌ها انتخاب شدند.\nدر حال شروع دانلود و پردازش هستم…")
+            try:
+                await q.edit_message_text("✅ همهٔ ترک‌ها انتخاب شدند.\nدر حال شروع دانلود و پردازش هستم…")
+            except:
+                pass
+
             msg = await context.bot.send_message(
                 chat_id=pl["chat_id"],
                 text="🔄 در حال آماده‌سازی دانلود پلی‌لیست…"
@@ -298,22 +342,31 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             async def task():
                 await process_playlist(uid, context, pl, list(range(len(pl["tracks"]))))
+
             await queue.put(task)
 
         elif data.startswith("pl_select:"):
             pl["await_selection"] = True
             pending_playlists[uid] = pl
-            await q.edit_message_text(
-                "✏️ شماره‌ی ترک‌هایی که می‌خواهی را بفرست:\n"
-                "مثال: 1,3,5-10,22"
-            )
+            try:
+                await q.edit_message_text(
+                    "✏️ شماره‌ی ترک‌هایی که می‌خواهی را بفرست:\n"
+                    "مثال: 1,3,5-10,22"
+                )
+            except:
+                pass
+
 
 # ================= COMMANDS =================
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.from_user:
+        return
+
     uid = update.message.from_user.id
     save_user(uid)
     if not await is_member(uid, context):
         return await force_join(update, context)
+
     await update.message.reply_text(
         "🎵 خوش آمدی.\n"
         "فایل موسیقی یا لینک SoundCloud ارسال کن.\n"
@@ -321,7 +374,11 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "برای انتخاب کیفیت SoundCloud: /quality"
     )
 
+
 async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.from_user:
+        return
+
     uid = update.message.from_user.id
     save_user(uid)
     rows = get_history(uid, 10)
@@ -333,7 +390,11 @@ async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"• {title}\n  ↳ {src}")
     await update.message.reply_text("🕘 آخرین موزیک‌های پردازش‌شده:\n\n" + "\n\n".join(lines))
 
+
 async def quality_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.from_user:
+        return
+
     uid = update.message.from_user.id
     save_user(uid)
     current = get_user_quality(uid)
@@ -353,8 +414,12 @@ async def quality_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=kb
     )
 
+
 # ================= FORWARDED / UPLOADED AUDIO =================
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.from_user:
+        return
+
     uid = update.message.from_user.id
     save_user(uid)
 
@@ -400,7 +465,10 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("✅ فایل با موفقیت پردازش و ارسال شد.")
         except Exception as e:
             logging.error(f"Error processing audio: {e}")
-            await msg.edit_text("❌ خطایی در پردازش فایل رخ داد.")
+            try:
+                await msg.edit_text("❌ خطایی در پردازش فایل رخ داد.")
+            except:
+                pass
         finally:
             for p in (raw, final):
                 if os.path.exists(p):
@@ -408,13 +476,16 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await queue.put(task)
 
+
 # ================= SOUNDLOUD PLAYLIST / SET HANDLING =================
 SC_REGEX = re.compile(r"https?://(?:on\.)?soundcloud\.com/[^\s]+")
 
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    هم لینک SoundCloud را می‌گیرد، هم انتخاب ترک‌ها برای پلی‌لیست.
-    """
+    # ایمن‌سازی در برابر callback/service update
+    if not update.message or not update.message.from_user:
+        return
+
     uid = update.message.from_user.id
     text = update.message.text or ""
     save_user(uid)
@@ -444,6 +515,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         async def task():
             await process_playlist(uid, context, pending_playlists[uid], indices)
+
         await queue.put(task)
         return
 
@@ -460,14 +532,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     info_msg = await update.message.reply_text("🔍 در حال تحلیل لینک SoundCloud…")
 
     try:
-        # گرفتن JSON کامل از yt-dlp
         json_raw = os.popen(f'yt-dlp -J "{url}"').read()
         data = json.loads(json_raw)
     except Exception as e:
         logging.error(f"yt-dlp -J error: {e}")
         return await info_msg.edit_text("❌ خطا در تحلیل لینک SoundCloud.")
 
-    # ساخت لیست ترک‌ها
     tracks = []
     playlist_title = data.get("title") or "SoundCloud"
     if "entries" in data and data["entries"]:
@@ -482,9 +552,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total = len(tracks)
     logging.info(f"[Playlist] User {uid} - {total} tracks detected from SoundCloud.")
 
-    # ساخت پیش‌نمایش لیست ترک‌ها
     lines = []
-    max_preview = min(total, 50)  # برای جلوگیری از طول زیاد
+    max_preview = min(total, 50)
     for i in range(max_preview):
         lines.append(f"{i+1}. {tracks[i]['title']}")
     if total > max_preview:
@@ -517,10 +586,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "chat_id": update.message.chat_id,
     }
 
+
 async def process_playlist(uid: int, context: ContextTypes.DEFAULT_TYPE, pl: dict, indices):
-    """
-    پردازش پلی‌لیست / ست SoundCloud بر اساس ایندکس‌های انتخاب شده.
-    """
     job_id = pl["job_id"]
     playlist_title = pl["playlist_title"]
     tracks = pl["tracks"]
@@ -642,6 +709,7 @@ async def process_playlist(uid: int, context: ContextTypes.DEFAULT_TYPE, pl: dic
         if uid in pending_playlists:
             del pending_playlists[uid]
 
+
 # ================= MAIN =================
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
@@ -661,6 +729,7 @@ def main():
         port=int(os.getenv("PORT", 10000)),
         webhook_url=BASE_URL
     )
+
 
 if __name__ == "__main__":
     main()
