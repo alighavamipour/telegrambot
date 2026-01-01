@@ -1,11 +1,9 @@
 # =========================================================
-# bot.py - FINAL STABLE & FULL FEATURED WITH SOUNDLOUD SHORT URL SUPPORT
+# bot.py - FINAL STABLE WITH FULL COVER/TAG + BIG FILE FIX
 # =========================================================
 
 import os, re, sqlite3, logging, asyncio, requests
 from uuid import uuid4
-from datetime import datetime
-
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 
@@ -13,12 +11,12 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
 BASE_URL = os.getenv("BASE_URL")
 
 DOWNLOAD_DIR = "downloads"
 COVER_PATH = "cover.jpg"
-MAX_FILE_SIZE = 50 * 1024 * 1024  # محدودیت sendAudio تلگرام (نه sendDocument)
+MAX_AUDIO_LIMIT = 20 * 1024 * 1024   # محدودیت دانلود Audio در Telegram
+MAX_FILE_SIZE = 50 * 1024 * 1024     # محدودیت sendAudio
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 # ================= LOGGING =================
@@ -40,9 +38,6 @@ def clean_filename(name):
     return name.strip() or "music"
 
 def guess_ext(audio_obj):
-    """
-    تشخیص پسوند از روی file_name و mime_type
-    """
     if getattr(audio_obj, "file_name", None):
         fn = audio_obj.file_name
         if "." in fn:
@@ -51,40 +46,63 @@ def guess_ext(audio_obj):
     mime = getattr(audio_obj, "mime_type", "") or ""
     mime = mime.lower()
 
-    if "audio/mpeg" in mime or "audio/mp3" in mime:
-        return "mp3"
-    if "audio/x-wav" in mime or "audio/wav" in mime:
-        return "wav"
-    if "audio/flac" in mime:
-        return "flac"
-    if "audio/ogg" in mime:
-        return "ogg"
-    if "audio/opus" in mime:
-        return "opus"
-    if "audio/mp4" in mime or "audio/x-m4a" in mime:
-        return "m4a"
+    if "mpeg" in mime: return "mp3"
+    if "wav" in mime: return "wav"
+    if "flac" in mime: return "flac"
+    if "ogg" in mime: return "ogg"
+    if "opus" in mime: return "opus"
+    if "m4a" in mime or "mp4" in mime: return "m4a"
 
     return "mp3"
 
 async def run_cmd(*cmd):
     proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
         raise Exception(stderr.decode() or stdout.decode())
 
-def resolve_soundcloud_url(url):
+async def tag_and_cover(src, dst, title):
+    await run_cmd(
+        "ffmpeg", "-y",
+        "-i", src,
+        "-i", COVER_PATH,
+        "-map", "0:a:0", "-map", "1:v:0",
+        "-map_metadata", "-1",
+        "-c:a", "libmp3lame",
+        "-q:a", "2",
+        "-c:v", "mjpeg",
+        "-disposition:v", "attached_pic",
+        "-id3v2_version", "3",
+        "-metadata", f"title={title}",
+        "-metadata", f"artist=@{CHANNEL_USERNAME}",
+        "-metadata", f"album=@{CHANNEL_USERNAME}",
+        "-metadata", f"comment=@{CHANNEL_USERNAME}",
+        dst
+    )
+
+# ================= QUEUE =================
+queue = asyncio.Queue()
+CONCURRENCY = 3
+
+async def worker():
     try:
-        r = requests.get(url, allow_redirects=True, timeout=10)
-        final_url = r.url
-        logging.info(f"[SoundCloud Redirect] {url}  -->  {final_url}")
-        return final_url
-    except Exception as e:
-        logging.warning(f"resolve_soundcloud_url failed: {e}")
-        return url
+        while True:
+            task = await queue.get()
+            try:
+                await task()
+            except Exception as e:
+                logging.error(f"Worker error: {e}")
+            finally:
+                queue.task_done()
+    except asyncio.CancelledError:
+        logging.info("Worker stopped.")
+
+async def start_workers(app):
+    for _ in range(CONCURRENCY):
+        asyncio.create_task(worker())
+    logging.info("Workers started.")
 
 # ================= FORCE JOIN =================
 async def is_member(uid, context):
@@ -100,8 +118,7 @@ async def force_join(update, context):
         [InlineKeyboardButton("✅ بررسی عضویت", callback_data="check")]
     ])
     await update.message.reply_text(
-        "🔔 برای استفاده از خدمات ربات، ابتدا در کانال رسمی عضو شوید.\n"
-        "پس از عضویت، روی «بررسی عضویت» بزنید.",
+        "🔔 برای استفاده از ربات ابتدا عضو کانال شوید.",
         reply_markup=kb
     )
 
@@ -109,184 +126,89 @@ async def check_join(update, context):
     q = update.callback_query
     await q.answer()
     if await is_member(q.from_user.id, context):
-        await q.edit_message_text(
-            "✅ عضویت شما با موفقیت تأیید شد.\n"
-            "اکنون می‌توانید فایل یا لینک موسیقی ارسال کنید."
-        )
+        await q.edit_message_text("✅ عضویت تأیید شد. فایل یا لینک ارسال کنید.")
     else:
-        await q.answer("❌ هنوز عضو کانال نیستید.", show_alert=True)
+        await q.answer("❌ هنوز عضو نیستید.", show_alert=True)
 
 # ================= START =================
 async def start(update, context):
     save_user(update.message.from_user.id)
     if not await is_member(update.message.from_user.id, context):
         return await force_join(update, context)
+    await update.message.reply_text("🎵 فایل یا لینک SoundCloud ارسال کنید.")
 
-    await update.message.reply_text(
-        "🎵 خوش آمدید!\n"
-        "برای دریافت نسخهٔ باکیفیت و کاور‌دار موسیقی، کافیست فایل یا لینک SoundCloud ارسال کنید."
-    )
-
-# ================= QUEUE =================
-queue = asyncio.Queue()
-CONCURRENCY = 3
-
-async def worker():
-    try:
-        while True:
-            task = await queue.get()
-            try:
-                await task()
-            except Exception as e:
-                logging.error(f"Worker task error: {e}")
-            finally:
-                queue.task_done()
-    except asyncio.CancelledError:
-        logging.info("Worker task cancelled, shutting down worker.")
-
-async def start_workers(app: Application):
-    for _ in range(CONCURRENCY):
-        asyncio.create_task(worker())
-    logging.info(f"{CONCURRENCY} workers started.")
-
-# ================= PROCESS AUDIO WITH COVER =================
-async def tag_and_cover(src, dst, title):
-    """
-    تبدیل هر ورودی به mp3 با کاور و تگ کانال.
-    ورودی و خروجی همیشه فایل‌های متفاوت هستند (نه in-place).
-    """
-    await run_cmd(
-        "ffmpeg", "-y",
-        "-i", src,
-        "-i", COVER_PATH,
-        # فقط صدای ورودی و تصویر کاور
-        "-map", "0:a:0", "-map", "1:v:0",
-        # حذف کامل متادیتا و کاورهای قبلی
-        "-map_metadata", "-1",
-        # صدا: mp3 با کیفیت بالا (بدون کاهش جداگانه برای فایل‌های بزرگ)
-        "-c:a", "libmp3lame",
-        "-q:a", "2",
-        # کاور به صورت attached_pic
-        "-c:v", "mjpeg",
-        "-disposition:v", "attached_pic",
-        "-id3v2_version", "3",
-        "-metadata", f"title={title}",
-        "-metadata", f"artist=@{CHANNEL_USERNAME}",
-        "-metadata", f"album=@{CHANNEL_USERNAME}",
-        "-metadata", f"comment=@{CHANNEL_USERNAME}",
-        dst
-    )
-
-# ================= RETRY HELPER =================
-async def retry_task(task_func, retries=2):
-    for attempt in range(1, retries + 1):
-        try:
-            await task_func()
-            return True
-        except Exception as e:
-            logging.warning(f"Task failed, attempt {attempt}/{retries}: {e}")
-            if attempt == retries:
-                return False
-        await asyncio.sleep(1)
-
-# ================= FORWARDED AUDIO =================
+# ================= PROCESS AUDIO =================
 async def handle_audio(update, context):
-    save_user(update.message.from_user.id)
-    if not await is_member(update.message.from_user.id, context):
+    user = update.message.from_user.id
+    save_user(user)
+
+    if not await is_member(user, context):
         return await force_join(update, context)
 
     audio = update.message.audio or update.message.document
     name = clean_filename(getattr(audio, "file_name", "") or "music")
     ext = guess_ext(audio)
 
-    msg = await update.message.reply_text(
-        f"✨ فایل «{name}.{ext}» با موفقیت دریافت شد.\n"
-        "در حال آماده‌سازی برای پردازش…",
-        reply_to_message_id=update.message.message_id
-    )
+    # 🔥 مهم: اگر Audio بالای 20MB باشد → Telegram اجازه دانلود نمی‌دهد
+    if update.message.audio and audio.file_size > MAX_AUDIO_LIMIT:
+        return await update.message.reply_text(
+            "⚠️ این فایل به‌صورت *Audio* ارسال شده و حجم آن بالای 20MB است.\n"
+            "لطفاً فایل را به‌صورت *Document* ارسال کنید تا بتوانم پردازش کنم."
+        )
+
+    msg = await update.message.reply_text("⬇️ در حال دریافت فایل…")
 
     uid = uuid4().hex
-    # ورودی: هر فرمتی که هست
     raw = f"{DOWNLOAD_DIR}/{uid}_in.{ext}"
-    # خروجی: همیشه mp3 و نام متفاوت از raw
     final = f"{DOWNLOAD_DIR}/{uid}_out.mp3"
 
     async def task():
         try:
-            await msg.edit_text("⬇️ در حال دریافت فایل…\nلطفاً چند لحظه صبور باشید.")
             file = await audio.get_file()
             await file.download_to_drive(raw)
 
-            await msg.edit_text(
-                "🎼 در حال تبدیل فایل و افزودن کاور اختصاصی…\n"
-                "کیفیت خروجی بالا و ثابت است."
-            )
-            success = await retry_task(lambda: tag_and_cover(raw, final, name))
-            if not success:
-                await msg.edit_text("⚠️ متأسفانه پردازش فایل ناموفق بود.")
-                return
+            await msg.edit_text("🎧 در حال تبدیل و افزودن کاور…")
+            await tag_and_cover(raw, final, name)
 
-            await msg.edit_text("📡 در حال انتقال فایل به کانال…\nفرآیند انتشار در حال انجام است.")
             size = os.path.getsize(final)
             caption = f"🎵 {name}\n🔗 @{CHANNEL_USERNAME}"
 
+            await msg.edit_text("📡 در حال ارسال به کانال…")
+
             with open(final, "rb") as f:
                 if size <= MAX_FILE_SIZE:
-                    await context.bot.send_audio(
-                        CHAT_ID := CHANNEL_ID,
-                        audio=f,
-                        filename=name + ".mp3",
-                        caption=caption
-                    )
+                    await context.bot.send_audio(CHANNEL_ID, f, filename=name+".mp3", caption=caption)
                 else:
-                    # برای فایل‌های بالای 50 مگ، بدون کاهش کیفیت به صورت document ارسال می‌شود
-                    await context.bot.send_document(
-                        CHAT_ID := CHANNEL_ID,
-                        document=f,
-                        filename=name + ".mp3",
-                        caption=caption
-                    )
+                    await context.bot.send_document(CHANNEL_ID, f, filename=name+".mp3", caption=caption)
 
-            await msg.edit_text("✅ عملیات با موفقیت به پایان رسید.\nفایل شما اکنون در کانال منتشر شده است.")
+            await msg.edit_text("✅ فایل با موفقیت پردازش و ارسال شد.")
         except Exception as e:
-            logging.error(f"Error processing audio: {e}")
-            try:
-                await msg.edit_text("❌ خطایی در پردازش فایل رخ داد.")
-            except:
-                pass
+            logging.error(e)
+            await msg.edit_text("❌ خطایی در پردازش فایل رخ داد.")
         finally:
-            for path in (raw, final):
-                try:
-                    if os.path.exists(path):
-                        os.remove(path)
-                except Exception as e:
-                    logging.warning(f"Error removing temp file {path}: {e}")
+            for p in (raw, final):
+                if os.path.exists(p):
+                    os.remove(p)
 
     await queue.put(task)
 
-# ================= LINKS / SOUNDCLOUD =================
+# ================= LINKS =================
 SC_REGEX = re.compile(r"https?://(?:on\.)?soundcloud\.com/[^\s]+")
-URL_REGEX = re.compile(r"https?://[^\s]+")
 
 async def handle_links(update, context):
     text = update.message.text or ""
-    save_user(update.message.from_user.id)
+    user = update.message.from_user.id
+    save_user(user)
 
-    if not await is_member(update.message.from_user.id, context):
+    if not await is_member(user, context):
         return await force_join(update, context)
 
-    url_match = SC_REGEX.search(text) or URL_REGEX.search(text)
+    url_match = SC_REGEX.search(text)
     if not url_match:
-        await update.message.reply_text("⚠️ لینک ارسال‌شده معتبر نیست.")
-        return
+        return await update.message.reply_text("⚠️ لینک SoundCloud معتبر نیست.")
 
-    url = resolve_soundcloud_url(url_match.group(0))
-
-    msg = await update.message.reply_text(
-        "🔍 در حال بررسی و تحلیل لینک SoundCloud…\n"
-        "لطفاً چند لحظه صبر کنید.",
-        reply_to_message_id=update.message.message_id
-    )
+    url = url_match.group(0)
+    msg = await update.message.reply_text("🔍 در حال تحلیل لینک…")
 
     uid = uuid4().hex
     raw = f"{DOWNLOAD_DIR}/{uid}_in.raw"
@@ -294,64 +216,33 @@ async def handle_links(update, context):
 
     async def task():
         try:
-            await msg.edit_text(
-                "⏳ در حال استخراج اطلاعات آهنگ…\n"
-                "در حال آماده‌سازی برای دانلود."
-            )
-            title = os.popen(f'yt-dlp --print "%(title)s" "{url}"').read().strip() or "music"
+            await msg.edit_text("⬇️ در حال دانلود…")
+            await run_cmd("yt-dlp", "-f", "bestaudio", "-o", raw, url)
 
-            await msg.edit_text(
-                f"⬇️ در حال دانلود آهنگ «{title}»…\n"
-                "این مرحله بسته به حجم فایل ممکن است کمی زمان ببرد."
-            )
-            success = await retry_task(lambda: run_cmd("yt-dlp", "-f", "bestaudio", "-o", raw, url))
-            if not success:
-                await msg.edit_text("❌ دانلود فایل ناموفق بود.")
-                return
+            title = clean_filename(os.popen(f'yt-dlp --print "%(title)s" "{url}"').read().strip() or "music")
 
-            await msg.edit_text(
-                "🎧 در حال تبدیل آهنگ و افزودن کاور اختصاصی…\n"
-                "لطفاً منتظر بمانید."
-            )
-            success = await retry_task(lambda: tag_and_cover(raw, final, title))
-            if not success:
-                await msg.edit_text("⚠️ پردازش فایل ناموفق بود.")
-                return
+            await msg.edit_text("🎧 در حال تبدیل و افزودن کاور…")
+            await tag_and_cover(raw, final, title)
 
-            await msg.edit_text("📡 در حال انتقال فایل به کانال…")
             size = os.path.getsize(final)
             caption = f"🎵 {title}\n🔗 @{CHANNEL_USERNAME}"
 
+            await msg.edit_text("📡 در حال ارسال…")
+
             with open(final, "rb") as f:
                 if size <= MAX_FILE_SIZE:
-                    await context.bot.send_audio(
-                        CHAT_ID := CHANNEL_ID,
-                        audio=f,
-                        filename=title + ".mp3",
-                        caption=caption
-                    )
+                    await context.bot.send_audio(CHANNEL_ID, f, filename=title+".mp3", caption=caption)
                 else:
-                    await context.bot.send_document(
-                        CHAT_ID := CHANNEL_ID,
-                        document=f,
-                        filename=title + ".mp3",
-                        caption=caption
-                    )
+                    await context.bot.send_document(CHANNEL_ID, f, filename=title+".mp3", caption=caption)
 
-            await msg.edit_text("✅ عملیات با موفقیت انجام شد.\nفایل شما اکنون در کانال قرار دارد.")
+            await msg.edit_text("✅ فایل در کانال قرار گرفت.")
         except Exception as e:
-            logging.error(f"Error processing link: {e}")
-            try:
-                await msg.edit_text("❌ خطایی در دانلود یا پردازش فایل رخ داد.")
-            except:
-                pass
+            logging.error(e)
+            await msg.edit_text("❌ خطا در پردازش لینک.")
         finally:
-            for path in (raw, final):
-                try:
-                    if os.path.exists(path):
-                        os.remove(path)
-                except Exception as e:
-                    logging.warning(f"Error removing temp file {path}: {e}")
+            for p in (raw, final):
+                if os.path.exists(p):
+                    os.remove(p)
 
     await queue.put(task)
 
