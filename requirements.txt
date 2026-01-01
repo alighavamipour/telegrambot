@@ -1,4 +1,4 @@
 python-telegram-bot[webhooks]==20.7
 yt-dlp
-supabase==2.3.0
+supabase==2.0.0
 
