@@ -1,9 +1,10 @@
 # =========================================================
-# bot.py - SOUNDLOUD POWERED BOT (PLAYLIST + QUALITY + HISTORY)
+# bot.py - SOUNDLOUD PRO BOT (PLAYLIST + SET + QUALITY + HISTORY)
 # =========================================================
 
-import os, re, sqlite3, logging, asyncio, requests
+import os, re, sqlite3, logging, asyncio, requests, json
 from uuid import uuid4
+from datetime import datetime
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -25,7 +26,7 @@ DOWNLOAD_DIR = "downloads"
 COVER_PATH = "cover.jpg"
 
 MAX_AUDIO_DL_LIMIT = 20 * 1024 * 1024   # محدودیت دانلود Audio در Telegram
-MAX_FILE_SIZE = 50 * 1024 * 1024        # محدودیت sendAudio تلگرام (sendDocument تا 2GB اوکی است)
+MAX_FILE_SIZE = 50 * 1024 * 1024        # محدودیت sendAudio (sendDocument تا 2GB اوکی است)
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
@@ -36,9 +37,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 conn = sqlite3.connect("users.db", check_same_thread=False)
 cur = conn.cursor()
 
-# users
 cur.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY)")
-# history: آخرین ترک‌های پردازش‌شده برای هر کاربر
+
 cur.execute("""
     CREATE TABLE IF NOT EXISTS history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -48,7 +48,7 @@ cur.execute("""
         created_at TEXT
     )
 """)
-# settings: تنظیمات کاربر (مثلاً کیفیت)
+
 cur.execute("""
     CREATE TABLE IF NOT EXISTS settings (
         user_id INTEGER PRIMARY KEY,
@@ -75,7 +75,6 @@ def get_user_quality(uid: int) -> str:
     return row[0] if row and row[0] else "best"
 
 def add_history(uid: int, title: str, source: str):
-    from datetime import datetime
     cur.execute(
         "INSERT INTO history (user_id, title, source, created_at) VALUES (?, ?, ?, ?)",
         (uid, title, source, datetime.utcnow().isoformat()),
@@ -127,9 +126,6 @@ async def run_cmd(*cmd):
         raise Exception(stderr.decode() or stdout.decode())
 
 async def tag_and_cover(src: str, dst: str, title: str):
-    """
-    تبدیل هر ورودی به mp3 با کاور و تگ کانال.
-    """
     await run_cmd(
         "ffmpeg", "-y",
         "-i", src,
@@ -159,21 +155,49 @@ def resolve_soundcloud_url(url: str) -> str:
         return url
 
 def get_format_for_quality(q: str) -> str:
-    """
-    quality:
-      - best
-      - 128
-      - 192
-      - 320
-    """
     if q == "128":
         return "bestaudio[abr<=128]/bestaudio"
     if q == "192":
         return "bestaudio[abr<=192]/bestaudio"
     if q == "320":
-        # سعی می‌کنیم بالاتر از 256 یا 192 پیدا کنیم
         return "bestaudio[abr>=256]/bestaudio[abr>=192]/bestaudio"
     return "bestaudio/best"
+
+def make_playlist_hashtag(title: str) -> str:
+    # حذف فاصله و کاراکترهای مشکل‌ساز
+    t = re.sub(r'\s+', '', title)
+    t = re.sub(r'[^\w\u0600-\u06FF]+', '', t)  # حروف، عدد، زیرخط، فارسی
+    return f"#{t}" if t else "#playlist"
+
+def parse_selection(text: str, max_n: int):
+    """
+    ورودی مثل: 1,3,5-10
+    خروجی: لیست ایندکس‌های 0-based
+    """
+    result = set()
+    parts = text.replace(" ", "").split(",")
+    for p in parts:
+        if "-" in p:
+            try:
+                a, b = p.split("-")
+                a, b = int(a), int(b)
+                if a > b:
+                    a, b = b, a
+                for i in range(a, b + 1):
+                    if 1 <= i <= max_n:
+                        result.add(i - 1)
+            except:
+                continue
+        else:
+            if not p:
+                continue
+            try:
+                i = int(p)
+                if 1 <= i <= max_n:
+                    result.add(i - 1)
+            except:
+                continue
+    return sorted(result)
 
 # ================= QUEUE =================
 queue: asyncio.Queue = asyncio.Queue()
@@ -215,22 +239,30 @@ async def force_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=kb
     )
 
+# ================= STATE: PENDING PLAYLISTS =================
+# ساختار: {user_id: {"job_id": str, "url": str, "playlist_title": str, "tracks": [ {title,url} ], "quality": str, "await_selection": bool, "status_msg_id": int, "chat_id": int}}
+pending_playlists = {}
+
+# ================= CALLBACK HANDLER =================
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     data = q.data
+    uid = q.from_user.id
     await q.answer()
 
     if data == "check_join":
-        if await is_member(q.from_user.id, context):
+        if await is_member(uid, context):
             await q.edit_message_text("✅ عضویت تأیید شد. حالا فایل یا لینک ارسال کنید.")
         else:
             await q.answer("❌ هنوز عضو کانال نیستید.", show_alert=True)
-    elif data.startswith("q_"):
+        return
+
+    if data.startswith("q_"):
         # تغییر کیفیت
         q_val = data[2:]
         if q_val not in ("best", "128", "192", "320"):
             return
-        set_user_quality(q.from_user.id, q_val)
+        set_user_quality(uid, q_val)
         text_map = {
             "best": "بهترین کیفیت موجود",
             "128": "۱۲۸ kbps",
@@ -241,8 +273,42 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🎚 کیفیت پیش‌فرض شما روی «{text_map[q_val]}» تنظیم شد.\n"
             "از این به بعد لینک‌های SoundCloud با این کیفیت دانلود می‌شوند."
         )
+        return
 
-# ================= START & COMMANDS =================
+    if data.startswith("pl_all:") or data.startswith("pl_select:"):
+        if uid not in pending_playlists:
+            return await q.edit_message_text("⛔ اطلاعات پلی‌لیست پیدا نشد. دوباره لینک را بفرست.")
+
+        job_id = data.split(":", 1)[1]
+        pl = pending_playlists.get(uid)
+        if not pl or pl["job_id"] != job_id:
+            return await q.edit_message_text("⛔ این درخواست منقضی شده است. دوباره لینک را بفرست.")
+
+        if data.startswith("pl_all:"):
+            # دانلود همه ترک‌ها
+            pl["await_selection"] = False
+            pending_playlists[uid] = pl
+            await q.edit_message_text("✅ همهٔ ترک‌ها انتخاب شدند.\nدر حال شروع دانلود و پردازش هستم…")
+            msg = await context.bot.send_message(
+                chat_id=pl["chat_id"],
+                text="🔄 در حال آماده‌سازی دانلود پلی‌لیست…"
+            )
+            pl["status_msg_id"] = msg.message_id
+            pending_playlists[uid] = pl
+
+            async def task():
+                await process_playlist(uid, context, pl, list(range(len(pl["tracks"]))))
+            await queue.put(task)
+
+        elif data.startswith("pl_select:"):
+            pl["await_selection"] = True
+            pending_playlists[uid] = pl
+            await q.edit_message_text(
+                "✏️ شماره‌ی ترک‌هایی که می‌خواهی را بفرست:\n"
+                "مثال: 1,3,5-10,22"
+            )
+
+# ================= COMMANDS =================
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.message.from_user.id
     save_user(uid)
@@ -299,7 +365,6 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = clean_filename(getattr(audio, "file_name", "") or "music")
     ext = guess_ext(audio)
 
-    # محدودیت Telegram برای Audio بالای 20MB
     if update.message.audio and audio.file_size > MAX_AUDIO_DL_LIMIT:
         return await update.message.reply_text(
             "⚠️ این فایل به‌صورت *Audio* ارسال شده و حجم آن بالای 20MB است.\n"
@@ -343,121 +408,239 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await queue.put(task)
 
-# ================= SOUNDLOUD LINKS (SINGLE + PLAYLIST + SET) =================
+# ================= SOUNDLOUD PLAYLIST / SET HANDLING =================
 SC_REGEX = re.compile(r"https?://(?:on\.)?soundcloud\.com/[^\s]+")
 
-async def handle_links(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text or ""
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    هم لینک SoundCloud را می‌گیرد، هم انتخاب ترک‌ها برای پلی‌لیست.
+    """
     uid = update.message.from_user.id
+    text = update.message.text or ""
     save_user(uid)
 
     if not await is_member(uid, context):
         return await force_join(update, context)
 
-    url_match = SC_REGEX.search(text)
-    if not url_match:
+    # اگر کاربر در حالت انتخاب دستی پلی‌لیست است
+    if uid in pending_playlists and pending_playlists[uid].get("await_selection"):
+        pl = pending_playlists[uid]
+        total = len(pl["tracks"])
+        indices = parse_selection(text, total)
+        if not indices:
+            return await update.message.reply_text(
+                "⚠️ ورودی نامعتبر بود.\n"
+                f"لطفاً مثل این مثال بفرست: 1,3,5-10 (حداکثر {total})"
+            )
+
+        pending_playlists[uid]["await_selection"] = False
+        await update.message.reply_text(
+            f"✅ {len(indices)} ترک انتخاب شد.\n"
+            "در حال شروع دانلود و پردازش هستم…"
+        )
+        msg = await update.message.reply_text("🔄 در حال آماده‌سازی دانلود پلی‌لیست…")
+        pending_playlists[uid]["status_msg_id"] = msg.message_id
+        pending_playlists[uid]["chat_id"] = msg.chat_id
+
+        async def task():
+            await process_playlist(uid, context, pending_playlists[uid], indices)
+        await queue.put(task)
+        return
+
+    # اگر لینک SoundCloud است
+    m = SC_REGEX.search(text)
+    if not m:
         return await update.message.reply_text("⚠️ فقط لینک‌های SoundCloud پشتیبانی می‌شوند.")
 
-    raw_url = url_match.group(0)
+    raw_url = m.group(0)
     url = resolve_soundcloud_url(raw_url)
-
     user_quality = get_user_quality(uid)
     fmt = get_format_for_quality(user_quality)
 
-    msg = await update.message.reply_text(
-        "🔍 در حال تحلیل لینک SoundCloud…\n"
-        "اگر Playlist یا Set باشد، همه ترک‌ها پردازش می‌شوند."
+    info_msg = await update.message.reply_text("🔍 در حال تحلیل لینک SoundCloud…")
+
+    try:
+        # گرفتن JSON کامل از yt-dlp
+        json_raw = os.popen(f'yt-dlp -J "{url}"').read()
+        data = json.loads(json_raw)
+    except Exception as e:
+        logging.error(f"yt-dlp -J error: {e}")
+        return await info_msg.edit_text("❌ خطا در تحلیل لینک SoundCloud.")
+
+    # ساخت لیست ترک‌ها
+    tracks = []
+    playlist_title = data.get("title") or "SoundCloud"
+    if "entries" in data and data["entries"]:
+        for entry in data["entries"]:
+            t_title = entry.get("title") or "Track"
+            t_url = entry.get("webpage_url") or entry.get("url") or url
+            tracks.append({"title": t_title, "url": t_url})
+    else:
+        t_title = data.get("title") or "Track"
+        tracks.append({"title": t_title, "url": url})
+
+    total = len(tracks)
+    logging.info(f"[Playlist] User {uid} - {total} tracks detected from SoundCloud.")
+
+    # ساخت پیش‌نمایش لیست ترک‌ها
+    lines = []
+    max_preview = min(total, 50)  # برای جلوگیری از طول زیاد
+    for i in range(max_preview):
+        lines.append(f"{i+1}. {tracks[i]['title']}")
+    if total > max_preview:
+        lines.append(f"... و {total - max_preview} ترک دیگر")
+
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📥 دانلود همه", callback_data=f"pl_all:{uid}"),
+            InlineKeyboardButton("🎯 انتخاب دستی", callback_data=f"pl_select:{uid}")
+        ]
+    ])
+
+    await info_msg.edit_text(
+        f"📀 نام پلی‌لیست / ست: {playlist_title}\n"
+        f"🎧 تعداد ترک‌ها: {total}\n"
+        f"🎚 کیفیت انتخابی: {user_quality}\n\n"
+        "🎵 لیست ترک‌ها:\n" +
+        "\n".join(lines),
+        reply_markup=kb
     )
 
-    uid_job = uuid4().hex
-    # همه ورودی‌ها در این job با این prefix ذخیره می‌شوند
-    pattern = os.path.join(DOWNLOAD_DIR, f"{uid_job}_in_%(playlist_index)03d_%(title)s.%(ext)s")
-    final_pattern_prefix = os.path.join(DOWNLOAD_DIR, f"{uid_job}_out_")
+    pending_playlists[uid] = {
+        "job_id": str(uid),
+        "url": url,
+        "playlist_title": playlist_title,
+        "tracks": tracks,
+        "quality": user_quality,
+        "await_selection": False,
+        "status_msg_id": None,
+        "chat_id": update.message.chat_id,
+    }
 
-    async def task():
+async def process_playlist(uid: int, context: ContextTypes.DEFAULT_TYPE, pl: dict, indices):
+    """
+    پردازش پلی‌لیست / ست SoundCloud بر اساس ایندکس‌های انتخاب شده.
+    """
+    job_id = pl["job_id"]
+    playlist_title = pl["playlist_title"]
+    tracks = pl["tracks"]
+    quality = pl["quality"]
+    total = len(indices)
+    status_msg_id = pl["status_msg_id"]
+    chat_id = pl["chat_id"]
+
+    fmt = get_format_for_quality(quality)
+    playlist_hashtag = make_playlist_hashtag(playlist_title)
+
+    logging.info(f"[Playlist] Start processing job {job_id} for user {uid}: {total} tracks.")
+
+    downloaded = 0
+    sent = 0
+
+    async def update_status(current_idx=None, phase="", current_title=""):
+        text = (
+            f"📀 پلی‌لیست: {playlist_title}\n"
+            f"{playlist_hashtag}  #playlist\n\n"
+            f"🎧 تعداد انتخاب‌شده: {total}\n"
+            f"⬇️ دانلود شده: {downloaded}/{total}\n"
+            f"📡 ارسال شده: {sent}/{total}\n"
+        )
+        if current_idx is not None:
+            text += f"\n🔄 ترک فعلی: {current_idx+1}/{total}\n"
+        if phase:
+            text += f"📍 مرحله: {phase}\n"
+        if current_title:
+            text += f"🎵 {current_title}"
         try:
-            await msg.edit_text("⬇️ در حال دانلود ترک‌ها (تکی یا Playlist/Set)…\n"
-                                f"🎚 کیفیت انتخابی: {user_quality}")
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=status_msg_id,
+                text=text
+            )
+        except Exception as e:
+            logging.warning(f"Status message update failed: {e}")
 
-            # دانلود همه‌ی ترک‌ها (حتی اگر لینک تکی باشد)
-            await run_cmd(
-                "yt-dlp",
-                "-f", fmt,
-                "--yes-playlist",
-                "-o", pattern,
-                url
+    try:
+        for pos, idx in enumerate(indices):
+            track = tracks[idx]
+            title = clean_filename(track["title"])
+            t_url = track["url"]
+
+            logging.info(f"[Playlist] ({pos+1}/{total}) Downloading: {title}")
+            await update_status(pos, "دانلود فایل از SoundCloud", title)
+
+            uid_job = f"{job_id}_{idx}"
+            raw = f"{DOWNLOAD_DIR}/{uid_job}_in.raw"
+            final = f"{DOWNLOAD_DIR}/{uid_job}_out.mp3"
+
+            try:
+                await run_cmd("yt-dlp", "-f", fmt, "-o", raw, t_url)
+            except Exception as e:
+                logging.error(f"[Playlist] Download error for {title}: {e}")
+                continue
+
+            downloaded += 1
+            await update_status(pos, "تبدیل و افزودن کاور", title)
+            logging.info(f"[Playlist] ({pos+1}/{total}) Converting: {title}")
+
+            try:
+                await tag_and_cover(raw, final, title)
+            except Exception as e:
+                logging.error(f"[Playlist] tag_and_cover error for {title}: {e}")
+                continue
+            finally:
+                if os.path.exists(raw):
+                    try:
+                        os.remove(raw)
+                    except:
+                        pass
+
+            size = os.path.getsize(final)
+            caption = (
+                f"{playlist_hashtag}\n"
+                f"#playlist\n"
+                f"📀 {playlist_title}\n"
+                f"🎵 {title}\n"
+                f"🔗 @{CHANNEL_USERNAME}"
             )
 
-            # پیدا کردن همه فایل‌های دانلود شده برای این job
-            input_files = [
-                f for f in os.listdir(DOWNLOAD_DIR)
-                if f.startswith(f"{uid_job}_in_")
-            ]
-            if not input_files:
-                await msg.edit_text("❌ دانلود ناموفق بود.")
-                return
+            await update_status(pos, "ارسال به کانال", title)
+            logging.info(f"[Playlist] ({pos+1}/{total}) Sending to channel: {title}")
 
-            # مرتب‌سازی تا ترک‌ها به ترتیب Playlist/Set ارسال شوند
-            input_files.sort()
-
-            await msg.edit_text(
-                f"🎧 {len(input_files)} ترک پیدا شد.\n"
-                "در حال تبدیل و افزودن کاور اختصاصی روی همه ترک‌ها…"
-            )
-
-            sent_count = 0
-            for in_file in input_files:
-                in_path = os.path.join(DOWNLOAD_DIR, in_file)
-                # استخراج عنوان از اسم فایل (بعد از prefix و index)
-                base = os.path.splitext(in_file)[0]  # uid_in_001_Title
-                # حذف prefix
-                base_title = base.split("_", 3)[-1] if "_" in base else base
-                title = clean_filename(base_title)
-
-                out_path = f"{final_pattern_prefix}{base_title}.mp3"
-
+            with open(final, "rb") as f:
                 try:
-                    await tag_and_cover(in_path, out_path, title)
-                except Exception as e:
-                    logging.error(f"Error tag_and_cover for {in_path}: {e}")
-                    continue
-
-                size = os.path.getsize(out_path)
-                caption = f"🎵 {title}\n🔗 @{CHANNEL_USERNAME}"
-
-                with open(out_path, "rb") as f:
                     if size <= MAX_FILE_SIZE:
                         await context.bot.send_audio(CHANNEL_ID, f, filename=title + ".mp3", caption=caption)
                     else:
                         await context.bot.send_document(CHANNEL_ID, f, filename=title + ".mp3", caption=caption)
-
-                add_history(uid, title, url)
-                sent_count += 1
-
-                # پاک کردن فایل خروجی بعد از ارسال برای کاهش فضای دیسک
-                try:
-                    if os.path.exists(out_path):
-                        os.remove(out_path)
-                except:
-                    pass
-
-            await msg.edit_text(
-                f"✅ عملیات تمام شد.\n"
-                f"{sent_count} ترک از SoundCloud در کانال منتشر شد."
-            )
-        except Exception as e:
-            logging.error(f"Error processing SoundCloud link: {e}")
-            await msg.edit_text("❌ خطایی در دانلود یا پردازش لینک SoundCloud رخ داد.")
-        finally:
-            # پاک کردن ورودی‌ها
-            for f in os.listdir(DOWNLOAD_DIR):
-                if f.startswith(f"{uid_job}_in_"):
+                    sent += 1
+                    add_history(uid, title, playlist_title)
+                except Exception as e:
+                    logging.error(f"[Playlist] Send error for {title}: {e}")
+                finally:
                     try:
-                        os.remove(os.path.join(DOWNLOAD_DIR, f))
+                        if os.path.exists(final):
+                            os.remove(final)
                     except:
                         pass
 
-    await queue.put(task)
+            await update_status(pos, "اتمام ترک فعلی", title)
+
+        await update_status(None, "تمام شد", "")
+        logging.info(f"[Playlist] Job {job_id} finished. Sent {sent}/{total} tracks.")
+    except Exception as e:
+        logging.error(f"[Playlist] Fatal error in process_playlist: {e}")
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=status_msg_id,
+                text="❌ خطایی در پردازش پلی‌لیست رخ داد."
+            )
+        except:
+            pass
+    finally:
+        if uid in pending_playlists:
+            del pending_playlists[uid]
 
 # ================= MAIN =================
 def main():
@@ -469,7 +652,7 @@ def main():
 
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.AUDIO | filters.Document.AUDIO, handle_audio))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_links))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     app.post_init = start_workers
 
