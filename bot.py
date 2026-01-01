@@ -40,7 +40,11 @@ def clean_filename(name):
     return name.strip() or "music"
 
 async def run_cmd(*cmd):
-    proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
         raise Exception(stderr.decode() or stdout.decode())
@@ -101,12 +105,24 @@ queue = asyncio.Queue()
 CONCURRENCY = 3
 
 async def worker():
-    while True:
-        task = await queue.get()
-        try:
-            await task()
-        finally:
-            queue.task_done()
+    try:
+        while True:
+            task = await queue.get()
+            try:
+                await task()
+            except Exception as e:
+                logging.error(f"Worker task error: {e}")
+            finally:
+                queue.task_done()
+    except asyncio.CancelledError:
+        # Shutdown تمیز هنگام بسته شدن ربات
+        logging.info("Worker task cancelled, shutting down worker.")
+
+# این تابع بعد از آماده شدن Application صدا زده می‌شود
+async def start_workers(app: Application):
+    for _ in range(CONCURRENCY):
+        asyncio.create_task(worker())
+    logging.info(f"{CONCURRENCY} workers started.")
 
 # ================= PROCESS AUDIO WITH COVER =================
 async def tag_and_cover(src, dst, title):
@@ -146,7 +162,7 @@ async def handle_audio(update, context):
 
     audio = update.message.audio or update.message.document
     name = clean_filename(audio.file_name or "music")
-    ext = (audio.file_name or "").split(".")[-1].lower()
+    ext = (audio.file_name or "").split(".")[-1].lower() if audio.file_name else "mp3"
 
     msg = await update.message.reply_text(
         f"✨ فایل «{name}.{ext}» با موفقیت دریافت شد.\n"
@@ -159,33 +175,42 @@ async def handle_audio(update, context):
     final = f"{DOWNLOAD_DIR}/{uid}.mp3"
 
     async def task():
-        await msg.edit_text("⬇️ در حال دریافت فایل…\nلطفاً چند لحظه صبور باشید.")
-        file = await audio.get_file()
-        await file.download_to_drive(raw)
+        try:
+            await msg.edit_text("⬇️ در حال دریافت فایل…\nلطفاً چند لحظه صبور باشید.")
+            file = await audio.get_file()
+            await file.download_to_drive(raw)
 
-        if ext != "mp3":
-            await msg.edit_text(
-                "🎼 در حال تبدیل فایل به فرمت MP3 و افزودن کاور اختصاصی…\n"
-                "کیفیت خروجی تضمین‌شده است."
-            )
-            success = await retry_task(lambda: tag_and_cover(raw, final, name))
-            if not success:
-                await msg.edit_text("⚠️ متأسفانه پردازش فایل ناموفق بود.")
-                return
-        else:
-            final = raw
-
-        await msg.edit_text("📡 در حال انتقال فایل به کانال…\nفرآیند انتشار در حال انجام است.")
-        size = os.path.getsize(final)
-        caption = f"🎵 {name}\n🔗 @{CHANNEL_USERNAME}"
-
-        with open(final, "rb") as f:
-            if size <= MAX_FILE_SIZE:
-                await context.bot.send_audio(CHANNEL_ID, f, filename=name, caption=caption)
+            if ext != "mp3":
+                await msg.edit_text(
+                    "🎼 در حال تبدیل فایل به فرمت MP3 و افزودن کاور اختصاصی…\n"
+                    "کیفیت خروجی تضمین‌شده است."
+                )
+                success = await retry_task(lambda: tag_and_cover(raw, final, name))
+                if not success:
+                    await msg.edit_text("⚠️ متأسفانه پردازش فایل ناموفق بود.")
+                    return
             else:
-                await context.bot.send_document(CHANNEL_ID, f, caption=caption)
+                # اگر خود فایل mp3 بود، همان را استفاده می‌کنیم
+                nonlocal final
+                final = raw
 
-        await msg.edit_text("✅ عملیات با موفقیت به پایان رسید.\nفایل شما اکنون در کانال منتشر شده است.")
+            await msg.edit_text("📡 در حال انتقال فایل به کانال…\nفرآیند انتشار در حال انجام است.")
+            size = os.path.getsize(final)
+            caption = f"🎵 {name}\n🔗 @{CHANNEL_USERNAME}"
+
+            with open(final, "rb") as f:
+                if size <= MAX_FILE_SIZE:
+                    await context.bot.send_audio(CHANNEL_ID, f, filename=name, caption=caption)
+                else:
+                    await context.bot.send_document(CHANNEL_ID, f, caption=caption)
+
+            await msg.edit_text("✅ عملیات با موفقیت به پایان رسید.\nفایل شما اکنون در کانال منتشر شده است.")
+        except Exception as e:
+            logging.error(f"Error processing audio: {e}")
+            try:
+                await msg.edit_text("❌ خطایی در پردازش فایل رخ داد.")
+            except:
+                pass
 
     await queue.put(task)
 
@@ -256,7 +281,10 @@ async def handle_links(update, context):
             await msg.edit_text("✅ عملیات با موفقیت انجام شد.\nفایل شما اکنون در کانال قرار دارد.")
         except Exception as e:
             logging.error(f"Error processing link: {e}")
-            await msg.edit_text("❌ خطایی در دانلود یا پردازش فایل رخ داد.")
+            try:
+                await msg.edit_text("❌ خطایی در دانلود یا پردازش فایل رخ داد.")
+            except:
+                pass
 
     await queue.put(task)
 
@@ -269,9 +297,8 @@ def main():
     app.add_handler(MessageHandler(filters.AUDIO | filters.Document.AUDIO, handle_audio))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_links))
 
-    loop = asyncio.get_event_loop()
-    for _ in range(CONCURRENCY):
-        loop.create_task(worker())
+    # استارت شدن workerها بعد از آماده شدن اپلیکیشن
+    app.post_init = start_workers
 
     app.run_webhook(
         listen="0.0.0.0",
