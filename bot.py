@@ -1104,7 +1104,8 @@ async def wallet_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("💸 درخواست نقد کردن سکه", callback_data="wallet:withdraw_start")],
     ])
 
-    await update.message.reply_markdown(txt, reply_markup=kb)
+    await update.message.reply_text(txt, reply_markup=kb)
+
 
 # =========================================================
 # ======================= AUDIO HANDLER ===================
