@@ -60,7 +60,7 @@ import httpx
 import logging
 import asyncio
 from uuid import uuid4
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 from telegram import (
     Update,
@@ -75,6 +75,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from telegram.error import BadRequest  # برای هندل Message is not modified
 
 # ================= ENV & CONSTANTS =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -102,7 +103,7 @@ logging.basicConfig(
 )
 
 # =========================================================
-# ===============  SUPABASE REST API CLIENT  ==============
+# =============== SUPABASE REST API CLIENT ==============
 # =========================================================
 
 class SupabaseDB:
@@ -542,8 +543,6 @@ async def get_basic_stats():
 # =========================== UTILS ========================
 # =========================================================
 
-from datetime import timedelta  # بعد از datetime بالا
-
 def clean_filename(name: str) -> str:
     name = re.sub(r'\.(mp3|m4a|wav|flac|ogg|opus)$', '', name, flags=re.I)
     return name.strip() or "music"
@@ -960,13 +959,25 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             limits = await get_user_limits()
             new_val = limits["max_daily_downloads"] + 1
             await update_user_limits({"max_daily_downloads": new_val})
-            return await q.edit_message_text(f"✅ حداکثر دانلود روزانه روی {new_val} تنظیم شد.")
+            new_text = f"✅ حداکثر دانلود روزانه روی {new_val} تنظیم شد."
+            try:
+                return await q.edit_message_text(new_text)
+            except BadRequest as e:
+                if "Message is not modified" in str(e):
+                    return
+                raise
 
         if action == "limits_dec":
             limits = await get_user_limits()
             new_val = max(0, limits["max_daily_downloads"] - 1)
             await update_user_limits({"max_daily_downloads": new_val})
-            return await q.edit_message_text(f"✅ حداکثر دانلود روزانه روی {new_val} تنظیم شد.")
+            new_text = f"✅ حداکثر دانلود روزانه روی {new_val} تنظیم شد."
+            try:
+                return await q.edit_message_text(new_text)
+            except BadRequest as e:
+                if "Message is not modified" in str(e):
+                    return
+                raise
 
         if action == "limits_toggle_pl":
             limits = await get_user_limits()
@@ -974,7 +985,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             new_val = 0 if current > 0 else 9999
             await update_user_limits({"max_playlist_tracks": new_val})
             state_txt = "❌ پلی‌لیست برای کاربران معمولی ممنوع شد." if new_val == 0 else "✅ پلی‌لیست برای کاربران معمولی فعال شد."
-            return await q.edit_message_text(state_txt)
+            try:
+                return await q.edit_message_text(state_txt)
+            except BadRequest as e:
+                if "Message is not modified" in str(e):
+                    return
+                raise
 
         # سیستم تبلیغات
         if action == "ads":
@@ -1300,14 +1316,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     tracks = []
     playlist_title = data.get("title") or "SoundCloud"
-    is_playlist = False
-    if "entries" in data and data["entries"]:
+
+    # 🔧 اصلاح تشخیص پلی‌لیست / تک ترک
+    entries = data.get("entries")
+    if entries and len(entries) > 1:
+        # پلی‌لیست واقعی (بیش از ۱ ترک)
         is_playlist = True
-        for entry in data["entries"]:
+        for entry in entries:
             t_title = entry.get("title") or "Track"
             t_url = entry.get("webpage_url") or entry.get("url") or url
             tracks.append({"title": t_title, "url": t_url})
     else:
+        # تک ترک یا pseudo-playlist با ۱ entry
+        is_playlist = False
         t_title = data.get("title") or "Track"
         tracks.append({"title": t_title, "url": url})
 
@@ -1519,8 +1540,9 @@ async def process_playlist_job_resume(uid: int, context: ContextTypes.DEFAULT_TY
     json_raw = os.popen(f'yt-dlp -J "{url}"').read()
     data = json.loads(json_raw)
     all_tracks = []
-    if "entries" in data and data["entries"]:
-        for entry in data["entries"]:
+    entries = data.get("entries")
+    if entries:
+        for entry in entries:
             t_title = entry.get("title") or "Track"
             t_url = entry.get("webpage_url") or entry.get("url") or url
             all_tracks.append({"title": t_title, "url": t_url})
