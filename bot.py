@@ -934,6 +934,44 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "آیدی عددی کاربر را ارسال کن (user_id)."
             )
 
+        # انتخاب پلن VIP
+        if action in ("vip_plan_monthly", "vip_plan_quarterly", "vip_plan_yearly"):
+            flow = admin_flows.get(uid)
+            if not flow or "data" not in flow or "target_id" not in flow["data"]:
+                return await q.edit_message_text("❌ اطلاعات کاربر پیدا نشد. دوباره از ابتدا تلاش کن.")
+            target_id = flow["data"]["target_id"]
+
+            if action == "vip_plan_monthly":
+                plan = "monthly"
+                days = 30
+            elif action == "vip_plan_quarterly":
+                plan = "quarterly"
+                days = 90
+            else:
+                plan = "yearly"
+                days = 365
+
+            await set_vip(target_id, plan, days)
+            await add_payment(target_id, plan, 0)
+
+            # پیام خوش‌آمدگویی برای کاربر VIP
+            try:
+                await context.bot.send_message(
+                    target_id,
+                    "👑 اشتراک VIP شما فعال شد!\n\n"
+                    "از این لحظه:\n"
+                    "• دانلود نامحدود\n"
+                    "• دسترسی کامل به پلی‌لیست و ست\n"
+                    "• کیفیت بالا\n"
+                    "• ارسال مستقیم در چت خودتان\n\n"
+                    "از ربات لذت ببرید."
+                )
+            except Exception as e:
+                logging.warning(f"Could not send VIP welcome message to {target_id}: {e}")
+
+            admin_flows.pop(uid, None)
+            return await q.edit_message_text(f"✅ کاربر {target_id} با موفقیت VIP ({plan}) شد.")
+
         # تنظیمات محدودیت کاربران معمولی
         if action == "limits":
             limits = await get_user_limits()
@@ -1282,7 +1320,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = await resolve_soundcloud_url(raw_url)
     user_quality = await get_user_quality(uid)
 
-    # اگر کاربر معمولی و پلی‌لیست باشد، جلوتر محدود می‌کنیم
     info_msg = await update.message.reply_text("🔍 در حال تحلیل لینک SoundCloud…")
 
     # Job ناتمام؟
@@ -1317,7 +1354,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tracks = []
     playlist_title = data.get("title") or "SoundCloud"
 
-    # 🔧 اصلاح تشخیص پلی‌لیست / تک ترک
     entries = data.get("entries")
     if entries and len(entries) > 1:
         # پلی‌لیست واقعی (بیش از ۱ ترک)
@@ -1333,8 +1369,76 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tracks.append({"title": t_title, "url": url})
 
     total = len(tracks)
-    logging.info(f"[Playlist] User {uid} - {total} tracks detected from SoundCloud.")
+    logging.info(f"[SC] User {uid} - is_playlist={is_playlist}, total_tracks={total}")
 
+    # اگر تک‌ترک است → مسیر اختصاصی
+    if not is_playlist:
+        # چک محدودیت روزانه برای یوزر معمولی
+        can_dl, msg_text = await check_free_user_limit(uid)
+        if not can_dl:
+            return await info_msg.edit_text(msg_text)
+
+        track = tracks[0]
+        title = clean_filename(track["title"])
+        fmt = get_format_for_quality(user_quality)
+
+        uid_job = uuid4().hex
+        raw_path = f"{DOWNLOAD_DIR}/{uid_job}_in.raw"
+        final_path = f"{DOWNLOAD_DIR}/{uid_job}_out.mp3"
+
+        await info_msg.edit_text("⬇️ در حال دانلود از SoundCloud…")
+
+        try:
+            await run_cmd("yt-dlp", "-f", fmt, "-o", raw_path, url)
+        except Exception as e:
+            logging.error(f"[Single] Download error: {e}")
+            return await info_msg.edit_text("❌ خطا در دانلود ترک از SoundCloud.")
+
+        await info_msg.edit_text("🎧 در حال تبدیل و افزودن کاور…")
+
+        try:
+            await tag_and_cover(raw_path, final_path, title)
+        except Exception as e:
+            logging.error(f"[Single] tag_and_cover error: {e}")
+            return await info_msg.edit_text("❌ خطا در تبدیل فایل.")
+        finally:
+            if os.path.exists(raw_path):
+                try:
+                    os.remove(raw_path)
+                except Exception:
+                    pass
+
+        size = os.path.getsize(final_path)
+        caption = f"🎵 {title}\n🔗 @{CHANNEL_USERNAME}"
+
+        await info_msg.edit_text("📡 در حال ارسال…")
+
+        target_chat = uid if await is_vip(uid) else CHANNEL_ID
+
+        try:
+            with open(final_path, "rb") as f:
+                if size <= MAX_FILE_SIZE:
+                    await context.bot.send_audio(target_chat, f, filename=title + ".mp3", caption=caption)
+                else:
+                    await context.bot.send_document(target_chat, f, filename=title + ".mp3", caption=caption)
+
+            await add_history(uid, title, "SoundCloud")
+            await increment_user_daily_usage(uid, date.today())
+            await log_analytics(uid, "download", {"type": "single"})
+            await info_msg.edit_text("✅ ترک با موفقیت دانلود و ارسال شد.")
+        except Exception as e:
+            logging.error(f"[Single] Send error: {e}")
+            await info_msg.edit_text("❌ خطایی در ارسال فایل رخ داد.")
+        finally:
+            if os.path.exists(final_path):
+                try:
+                    os.remove(final_path)
+                except Exception:
+                    pass
+
+        return  # مسیر تک‌ترک تمام شد
+
+    # از اینجا به بعد فقط پلی‌لیست/ست است
     # محدودیت پلی‌لیست برای کاربران معمولی
     if is_playlist and not await is_vip(uid):
         limits = await get_user_limits()
@@ -1344,7 +1448,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "برای فعال‌سازی VIP با ادمین تماس بگیر."
             )
 
-    await log_analytics(uid, "playlist" if is_playlist else "single", {"total": total})
+    await log_analytics(uid, "playlist", {"total": total})
 
     # Job جدید برای Resume
     job_id = uuid4().hex
