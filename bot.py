@@ -1213,34 +1213,52 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ================= منوی اصلی =================
     if data.startswith("menu:"):
         action = data.split(":", 1)[1]
+
+        # 🎵 دانلود موزیک
         if action == "download":
-            return await q.edit_message_text(
-                "🎵 برای دانلود، فقط لینک SoundCloud یا فایل صوتی را اینجا بفرست."
+            return await context.bot.send_message(
+                uid,
+                "🎵 برای دانلود، فقط لینک SoundCloud یا فایل صوتی را ارسال کن."
             )
+
+        # 👑 VIP
         if action == "vip":
-    await context.bot.send_message(uid, "👑 وضعیت VIP:")
-    await vip_cmd(update, context)
-    return
+            return await vip_cmd(
+                Update(update.update_id, message=q.message),
+                context
+            )
 
+        # 💰 کیف پول
         if action == "wallet":
-    await context.bot.send_message(uid, "💰 کیف پول:")
-    await wallet_cmd(update, context)
-    return
+            return await wallet_cmd(
+                Update(update.update_id, message=q.message),
+                context
+            )
 
+        # 👥 دعوت دوستان
         if action == "referral":
             wallet = await get_wallet(uid)
             ref_count = await count_referrals(uid)
-            ref_link = f"https://t.me/{BOT_USERNAME}?start=ref_{uid}" if BOT_USERNAME else "—"
+            ref_link = f"https://t.me/{BOT_USERNAME}?start=ref_{uid}"
+
             txt = (
                 "👥 سیستم دعوت دوستان:\n\n"
-                f"🔗 لینک دعوت اختصاصی شما:\n{ref_link}\n\n"
+                f"🔗 لینک دعوت اختصاصی:\n{ref_link}\n\n"
                 f"هر دعوت موفق = {INVITE_REWARD_COINS} سکه\n"
-                f"دعوت‌های موفق تا الان: {ref_count}\n"
+                f"دعوت‌های موفق: {ref_count}\n"
                 f"موجودی فعلی: {wallet['balance']} سکه\n\n"
-                "دوستانت رو دعوت کن، سکه بگیر و با سکه VIP بخر."
+                "دوستانت را دعوت کن و سکه بگیر."
             )
-            return await q.edit_message_text(txt)
+            return await context.bot.send_message(uid, txt)
+
+        # ⚙️ تنظیم کیفیت (فقط VIP)
         if action == "quality":
+            if not await is_vip(uid):
+                return await context.bot.send_message(
+                    uid,
+                    "⚠️ تنظیم کیفیت فقط برای کاربران VIP فعال است."
+                )
+
             current = await get_user_quality(uid)
             kb = InlineKeyboardMarkup([
                 [
@@ -1252,26 +1270,34 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     InlineKeyboardButton("🎚 128kbps", callback_data="q_128"),
                 ]
             ])
-            return await q.edit_message_text(
-                f"🎚 کیفیت فعلی: {current}\n"
-                "یکی از گزینه‌های زیر را انتخاب کن:",
+            return await context.bot.send_message(
+                uid,
+                f"🎚 کیفیت فعلی: {current}\nیکی از گزینه‌ها را انتخاب کن:",
                 reply_markup=kb
             )
+
+        # 📂 تاریخچه
         if action == "history":
             rows = await get_history(uid, 10)
             if not rows:
-                return await q.edit_message_text("📂 هنوز هیچ موزیکی با ربات پردازش نکردی.")
+                return await context.bot.send_message(uid, "📂 هنوز هیچ موزیکی پردازش نکردی.")
             lines = []
             for title, source, created_at in rows:
-                src = source if source != "forwarded" else "فایل فورواردی / آپلود"
+                src = source if source != "forwarded" else "فایل آپلودی"
                 lines.append(f"• {title}\n  ↳ {src}")
-            return await q.edit_message_text("🕘 آخرین موزیک‌های پردازش‌شده:\n\n" + "\n\n".join(lines))
+            return await context.bot.send_message(uid, "🕘 تاریخچه:\n\n" + "\n\n".join(lines))
+
+        # 📖 راهنما
         if action == "help":
-            return await q.edit_message_text(HELP_TEXT)
+            return await context.bot.send_message(uid, HELP_TEXT)
+
         return
 
     # ================= کیفیت =================
     if data.startswith("q_"):
+        if not await is_vip(uid):
+            return await q.edit_message_text("⚠️ تغییر کیفیت فقط برای VIP فعال است.")
+
         mapping = {
             "q_best": "best",
             "q_320": "320",
@@ -1281,14 +1307,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         q_key = data
         if q_key in mapping:
             await set_user_quality(uid, mapping[q_key])
-            await log_analytics(uid, "quality_change", {"quality": mapping[q_key]})
             return await q.edit_message_text(f"🎚 کیفیت روی {mapping[q_key]} تنظیم شد.")
         return
 
-    # بررسی عضویت
+    # ================= بررسی عضویت =================
     if data == "check_join":
         if await is_member(uid, context):
-            return await q.edit_message_text("✅ عضویت شما تایید شد. حالا فایل یا لینک بفرست.")
+            return await q.edit_message_text("✅ عضویت تایید شد. حالا لینک یا فایل بفرست.")
         else:
             return await q.edit_message_text("❌ هنوز عضو کانال نیستی.")
 
@@ -1301,70 +1326,60 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             wallet = await get_wallet(uid)
             txt = (
                 "👑 خرید VIP با سکه:\n\n"
-                f"💎 موجودی فعلی: {wallet['balance']} سکه\n\n"
-                "پلن مورد نظر را انتخاب کن:\n"
-                f"• ماهانه: {VIP_COIN_PRICES['monthly']} سکه\n"
-                f"• سه‌ماهه: {VIP_COIN_PRICES['quarterly']} سکه\n"
-                f"• سالانه: {VIP_COIN_PRICES['yearly']} سکه\n"
+                f"موجودی فعلی: {wallet['balance']} سکه\n\n"
+                f"ماهانه: {VIP_COIN_PRICES['monthly']} سکه\n"
+                f"سه‌ماهه: {VIP_COIN_PRICES['quarterly']} سکه\n"
+                f"سالانه: {VIP_COIN_PRICES['yearly']} سکه\n"
             )
             kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton(f"ماهانه ({VIP_COIN_PRICES['monthly']})", callback_data="wallet:buyvip_monthly")],
-                [InlineKeyboardButton(f"سه‌ماهه ({VIP_COIN_PRICES['quarterly']})", callback_data="wallet:buyvip_quarterly")],
-                [InlineKeyboardButton(f"سالانه ({VIP_COIN_PRICES['yearly']})", callback_data="wallet:buyvip_yearly")],
+                [InlineKeyboardButton("ماهانه", callback_data="wallet:buyvip_monthly")],
+                [InlineKeyboardButton("سه‌ماهه", callback_data="wallet:buyvip_quarterly")],
+                [InlineKeyboardButton("سالانه", callback_data="wallet:buyvip_yearly")],
             ])
-            return await q.edit_message_text(txt, reply_markup=kb)
+            return await context.bot.send_message(uid, txt, reply_markup=kb)
 
+        # خرید VIP پلن‌ها
         if action.startswith("buyvip_"):
             plan_key = action.split("_", 1)[1]
-            if plan_key not in VIP_COIN_PRICES:
-                return await q.edit_message_text("❌ پلن نامعتبر است.")
             price = VIP_COIN_PRICES[plan_key]
             wallet = await get_wallet(uid)
+
             if wallet["balance"] < price:
-                return await q.edit_message_text(
-                    "❌ موجودی سکه برای این پلن کافی نیست.\n"
-                    "دوستانت را دعوت کن تا سکه بیشتری بگیری."
+                return await context.bot.send_message(
+                    uid,
+                    "❌ موجودی کافی نیست.\nدوستانت را دعوت کن تا سکه بگیری."
                 )
+
             new_balance = await update_wallet_balance(uid, -price)
-            await add_wallet_tx(
-                from_user=uid,
-                to_user=None,
-                amount=price,
-                type="vip_purchase",
-                meta={"plan": plan_key},
-            )
+            await add_wallet_tx(uid, None, price, "vip_purchase", {"plan": plan_key})
+
             days_map = {"monthly": 30, "quarterly": 90, "yearly": 365}
             await set_vip(uid, plan_key, days_map[plan_key])
-            await add_payment(uid, plan_key, 0)
-            try:
-                await context.bot.send_message(
-                    uid,
-                    "👑 خرید VIP با سکه انجام شد!\n\n"
-                    f"پلن: {plan_key}\n"
-                    f"از موجودی کیف پولت {price} سکه کسر شد.\n"
-                    f"موجودی جدید: {new_balance} سکه."
-                )
-            except Exception:
-                pass
-            return await q.edit_message_text("✅ VIP با موفقیت برایت فعال شد.")
 
-        # شروع انتقال سکه
+            return await context.bot.send_message(
+                uid,
+                f"👑 VIP فعال شد!\nپلن: {plan_key}\nموجودی جدید: {new_balance} سکه"
+            )
+
+        # انتقال سکه
         if action == "transfer_start":
             wallet_flows[uid] = {"mode": "transfer_address", "data": {}}
-            return await q.edit_message_text(
-                "💳 انتقال سکه:\n\n"
-                "آدرس کیف پول مقصد را ارسال کن."
-            )
+            return await context.bot.send_message(uid, "آدرس کیف پول مقصد را ارسال کن.")
 
-        # شروع درخواست نقد
+        # درخواست نقد
         if action == "withdraw_start":
             wallet_flows[uid] = {"mode": "withdraw_amount", "data": {}}
-            return await q.edit_message_text(
-                "💸 درخواست تبدیل به پول نقد:\n\n"
-                "تعداد سکه‌ای که می‌خواهی برداشت کنی را ارسال کن (عدد)."
-            )
+            return await context.bot.send_message(uid, "مقدار سکه برای برداشت را ارسال کن.")
 
         return
+
+    # ================= ADMIN PANEL =================
+    if data.startswith("admin:"):
+        pass  # بدون تغییر
+
+    # ================= Playlist callbacks =================
+    # بدون تغییر
+
 
     # ================= ADMIN PANEL =================
     if data.startswith("admin:"):
