@@ -301,13 +301,14 @@ async def tag_and_cover(src: str, dst: str, title: str):
     )
 
 
-def resolve_soundcloud_url(url: str) -> str:
+async def resolve_soundcloud_url(url: str) -> str:
     try:
-        import requests
-        r = requests.get(url, allow_redirects=True, timeout=10)
-        return r.url
-    except:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=10) as client:
+            r = await client.get(url)
+            return str(r.url)
+    except Exception:
         return url
+
 
 
 def get_format_for_quality(q: str) -> str:
@@ -598,7 +599,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # لینک SoundCloud
     if "soundcloud.com" in text.lower():
-        url = resolve_soundcloud_url(text)
+        url = await resolve_soundcloud_url(text)
         return await handle_soundcloud_link(update, context, uid, url)
 
     await update.message.reply_text("❗ لطفاً لینک SoundCloud یا فایل موسیقی ارسال کن.")
