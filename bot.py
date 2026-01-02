@@ -1,6 +1,57 @@
 # =========================================================
-# bot.py — SoundCloud Bot (Supabase REST API + Full Features)
+# bot.py — SoundCloud Bot + VIP + Admin Panel + Limits + Ads + Analytics
 # =========================================================
+#
+# قبل از اجرا، این جداول را در Supabase بساز (SQL Editor):
+#
+# CREATE TABLE IF NOT EXISTS admins (
+#   user_id BIGINT PRIMARY KEY,
+#   role TEXT DEFAULT 'admin', -- owner / admin
+#   created_at TIMESTAMP DEFAULT NOW()
+# );
+#
+# CREATE TABLE IF NOT EXISTS vip_users (
+#   user_id BIGINT PRIMARY KEY,
+#   plan TEXT NOT NULL,          -- monthly / quarterly / yearly
+#   expires_at TIMESTAMP NOT NULL,
+#   created_at TIMESTAMP DEFAULT NOW()
+# );
+#
+# CREATE TABLE IF NOT EXISTS payments (
+#   id BIGSERIAL PRIMARY KEY,
+#   user_id BIGINT NOT NULL,
+#   plan TEXT NOT NULL,
+#   amount INT NOT NULL,
+#   created_at TIMESTAMP DEFAULT NOW()
+# );
+#
+# CREATE TABLE IF NOT EXISTS user_limits (
+#   id BIGSERIAL PRIMARY KEY,
+#   max_daily_downloads INT DEFAULT 1,
+#   max_playlist_tracks INT DEFAULT 0, -- 0 یعنی پلی‌لیست ممنوع
+#   max_quality TEXT DEFAULT '192',
+#   reset_hour INT DEFAULT 0,
+#   updated_at TIMESTAMP DEFAULT NOW()
+# );
+#
+# CREATE TABLE IF NOT EXISTS user_daily_usage (
+#   user_id BIGINT,
+#   date DATE,
+#   downloads INT DEFAULT 0,
+#   PRIMARY KEY (user_id, date)
+# );
+#
+# CREATE TABLE IF NOT EXISTS analytics (
+#   id BIGSERIAL PRIMARY KEY,
+#   user_id BIGINT,
+#   action TEXT,
+#   meta JSONB,
+#   created_at TIMESTAMP DEFAULT NOW()
+# );
+#
+# جداول قبلی‌ات:
+#   users, settings, history, jobs, job_tracks
+# باید مثل قبل وجود داشته باشند.
 
 import os
 import re
@@ -9,7 +60,7 @@ import httpx
 import logging
 import asyncio
 from uuid import uuid4
-from datetime import datetime
+from datetime import datetime, date
 
 from telegram import (
     Update,
@@ -33,6 +84,9 @@ BASE_URL = os.getenv("BASE_URL")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+# مالک اصلی پنل
+OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
 DOWNLOAD_DIR = "downloads"
 COVER_PATH = "cover.jpg"
@@ -125,7 +179,6 @@ class SupabaseDB:
             return r.json()
 
     async def upsert(self, table, data, on_conflict: str):
-        # data می‌تونه dict یا list[dict] باشه
         async with httpx.AsyncClient() as client:
             r = await client.post(
                 f"{self.url}/rest/v1/{table}",
@@ -151,7 +204,6 @@ async def save_user(uid: int):
     try:
         await db.insert("users", {"user_id": uid})
     except Exception:
-        # اگر وجود داشته باشد، خطا را نادیده می‌گیریم
         pass
 
 # ---------- SETTINGS ----------
@@ -191,7 +243,6 @@ async def get_history(uid: int, limit: int = 10):
         limit=limit,
         order="id.desc",
     )
-    # برگرداندن به فرم (title, source, created_at)
     result = []
     for r in rows:
         result.append(
@@ -253,7 +304,6 @@ async def get_pending_indices_for_job(job_id):
         {"job_id": job_id},
         order="track_index.asc",
     )
-    # برگرداندن به فرم (index, title) برای Resume
     return [
         (r["track_index"], r["title"])
         for r in rows
@@ -283,9 +333,216 @@ async def reset_job(job_id):
     await db.delete("job_tracks", {"job_id": job_id})
     await db.delete("jobs", {"job_id": job_id})
 
+# ---------- ADMINS ----------
+async def ensure_owner_admin():
+    if not OWNER_ID:
+        logging.warning("OWNER_ID is not set; owner admin cannot be ensured.")
+        return
+    try:
+        rows = await db.select("admins", {"user_id": OWNER_ID}, limit=1)
+        if rows:
+            if rows[0].get("role") != "owner":
+                await db.update("admins", {"user_id": OWNER_ID}, {"role": "owner"})
+        else:
+            await db.insert(
+                "admins",
+                {"user_id": OWNER_ID, "role": "owner"}
+            )
+        logging.info(f"Owner admin ensured for user_id={OWNER_ID}")
+    except Exception as e:
+        logging.error(f"ensure_owner_admin error: {e}")
+
+async def is_admin(uid: int) -> bool:
+    try:
+        rows = await db.select("admins", {"user_id": uid}, limit=1)
+        return bool(rows)
+    except Exception as e:
+        logging.error(f"is_admin error: {e}")
+        return False
+
+async def is_owner(uid: int) -> bool:
+    return uid == OWNER_ID
+
+async def add_admin(uid: int):
+    try:
+        await db.upsert(
+            "admins",
+            {"user_id": uid, "role": "admin"},
+            on_conflict="user_id"
+        )
+    except Exception as e:
+        logging.error(f"add_admin error: {e}")
+
+async def remove_admin(uid: int):
+    try:
+        await db.delete("admins", {"user_id": uid})
+    except Exception as e:
+        logging.error(f"remove_admin error: {e}")
+
+async def list_admins():
+    try:
+        rows = await db.select("admins")
+        return rows
+    except Exception as e:
+        logging.error(f"list_admins error: {e}")
+        return []
+
+# ---------- VIP ----------
+async def set_vip(uid: int, plan: str, days: int):
+    now = datetime.utcnow()
+    rows = await db.select("vip_users", {"user_id": uid}, limit=1)
+    if rows:
+        old_exp = datetime.fromisoformat(rows[0]["expires_at"].replace("Z", ""))
+        base = old_exp if old_exp > now else now
+    else:
+        base = now
+    new_exp = base + timedelta(days=days)
+    await db.upsert(
+        "vip_users",
+        {
+            "user_id": uid,
+            "plan": plan,
+            "expires_at": new_exp.isoformat(),
+        },
+        on_conflict="user_id"
+    )
+
+async def get_vip_info(uid: int):
+    rows = await db.select("vip_users", {"user_id": uid}, limit=1)
+    if not rows:
+        return None
+    return rows[0]
+
+async def is_vip(uid: int) -> bool:
+    info = await get_vip_info(uid)
+    if not info:
+        return False
+    try:
+        exp = datetime.fromisoformat(info["expires_at"].replace("Z", ""))
+    except Exception:
+        return False
+    return exp > datetime.utcnow()
+
+# ---------- PAYMENTS ----------
+async def add_payment(uid: int, plan: str, amount: int):
+    try:
+        await db.insert(
+            "payments",
+            {
+                "user_id": uid,
+                "plan": plan,
+                "amount": amount,
+                "created_at": datetime.utcnow().isoformat(),
+            }
+        )
+    except Exception as e:
+        logging.error(f"add_payment error: {e}")
+
+# ---------- USER LIMITS (GLOBAL SETTINGS) ----------
+async def get_user_limits():
+    rows = await db.select("user_limits", limit=1)
+    if rows:
+        return rows[0]
+    # اگر خالی بود، یک رکورد دیفالت بسازیم
+    defaults = {
+        "max_daily_downloads": 1,
+        "max_playlist_tracks": 0,
+        "max_quality": "192",
+        "reset_hour": 0,
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+    await db.insert("user_limits", defaults)
+    return defaults
+
+async def update_user_limits(data: dict):
+    rows = await db.select("user_limits", limit=1)
+    if not rows:
+        await db.insert("user_limits", data)
+    else:
+        row_id = rows[0]["id"]
+        data["updated_at"] = datetime.utcnow().isoformat()
+        await db.update("user_limits", {"id": row_id}, data)
+
+# ---------- USER DAILY USAGE ----------
+async def get_user_daily_usage(uid: int, d: date):
+    rows = await db.select(
+        "user_daily_usage",
+        {"user_id": uid, "date": d.isoformat()},
+        limit=1,
+    )
+    if rows:
+        return rows[0]["downloads"]
+    return 0
+
+async def increment_user_daily_usage(uid: int, d: date):
+    current = await get_user_daily_usage(uid, d)
+    if current == 0:
+        await db.insert(
+            "user_daily_usage",
+            {"user_id": uid, "date": d.isoformat(), "downloads": 1},
+        )
+    else:
+        await db.update(
+            "user_daily_usage",
+            {"user_id": uid, "date": d.isoformat()},
+            {"downloads": current + 1},
+        )
+
+# ---------- ANALYTICS ----------
+async def log_analytics(uid: int, action: str, meta: dict = None):
+    try:
+        await db.insert(
+            "analytics",
+            {
+                "user_id": uid,
+                "action": action,
+                "meta": meta or {},
+                "created_at": datetime.utcnow().isoformat(),
+            }
+        )
+    except Exception as e:
+        logging.error(f"log_analytics error: {e}")
+
+async def get_basic_stats():
+    # آمار خیلی ساده برای نمایش در پنل
+    today_str = date.today().isoformat()
+    stats = {
+        "downloads_today": 0,
+        "vip_count": 0,
+        "users_count": 0,
+    }
+    try:
+        # تعداد دانلود امروز
+        rows = await db.select(
+            "analytics",
+            {"action": "download"},
+        )
+        stats["downloads_today"] = sum(
+            1 for r in rows
+            if r.get("created_at", "").startswith(today_str)
+        )
+    except Exception:
+        pass
+
+    try:
+        rows = await db.select("vip_users")
+        stats["vip_count"] = len(rows)
+    except Exception:
+        pass
+
+    try:
+        rows = await db.select("users")
+        stats["users_count"] = len(rows)
+    except Exception:
+        pass
+
+    return stats
+
 # =========================================================
 # =========================== UTILS ========================
 # =========================================================
+
+from datetime import timedelta  # بعد از datetime بالا
 
 def clean_filename(name: str) -> str:
     name = re.sub(r'\.(mp3|m4a|wav|flac|ogg|opus)$', '', name, flags=re.I)
@@ -453,6 +710,9 @@ async def force_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
 SC_REGEX = re.compile(r"https?://(?:on\.)?soundcloud\.com/[^\s]+")
 pending_playlists = {}  # uid -> {...}
 
+# Admin flows: برای نگه‌داشتن وضعیت چندمرحله‌ای
+admin_flows = {}  # uid -> {"mode": str, "data": dict}
+
 # =========================================================
 # ========================= COMMANDS ======================
 # =========================================================
@@ -470,7 +730,8 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🎵 خوش آمدی.\n"
         "فایل موسیقی یا لینک SoundCloud ارسال کن.\n"
         "برای دیدن تاریخچه: /history\n"
-        "برای انتخاب کیفیت SoundCloud: /quality"
+        "برای انتخاب کیفیت SoundCloud: /quality\n"
+        "برای دیدن وضعیت VIP: /vip"
     )
 
 async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -511,9 +772,66 @@ async def quality_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=kb
     )
 
+async def vip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.from_user:
+        return
+    uid = update.message.from_user.id
+    info = await get_vip_info(uid)
+    if await is_vip(uid):
+        exp = info["expires_at"]
+        await update.message.reply_text(
+            f"👑 شما VIP هستید.\n"
+            f"پلن: {info['plan']}\n"
+            f"انقضا: {exp}\n\n"
+            "از همهٔ قابلیت‌های ربات بدون محدودیت استفاده کن."
+        )
+    else:
+        limits = await get_user_limits()
+        await update.message.reply_text(
+            "❌ شما VIP نیستید.\n\n"
+            f"کاربران معمولی:\n"
+            f"• حداکثر {limits['max_daily_downloads']} دانلود در روز\n"
+            f"• بدون دسترسی به پلی‌لیست\n"
+            f"• کیفیت تا {limits['max_quality']}kbps\n\n"
+            "برای دسترسی کامل به پلی‌لیست، کیفیت بالا و دانلود نامحدود، با ادمین تماس بگیر و VIP شو."
+        )
+
+async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.from_user:
+        return
+    uid = update.message.from_user.id
+    if not await is_admin(uid):
+        return await update.message.reply_text("⛔️ شما به پنل مدیریت دسترسی ندارید.")
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("👑 مدیریت VIP", callback_data="admin:vip")],
+        [InlineKeyboardButton("📢 تبلیغات", callback_data="admin:ads")],
+        [InlineKeyboardButton("⚙️ محدودیت کاربران معمولی", callback_data="admin:limits")],
+        [InlineKeyboardButton("🛠 مدیریت ادمین‌ها", callback_data="admin:admins")],
+        [InlineKeyboardButton("📊 آمار و آنالیتیکس", callback_data="admin:stats")],
+    ])
+    await update.message.reply_text("🛠 پنل مدیریت:", reply_markup=kb)
+
 # =========================================================
 # ======================= AUDIO HANDLER ===================
 # =========================================================
+
+async def check_free_user_limit(uid: int) -> tuple[bool, str | None]:
+    """بررسی می‌کند آیا کاربر معمولی هنوز اجازه دانلود امروز دارد یا نه."""
+    if await is_vip(uid):
+        return True, None
+
+    limits = await get_user_limits()
+    max_daily = limits["max_daily_downloads"]
+    today = date.today()
+    used = await get_user_daily_usage(uid, today)
+    if used >= max_daily:
+        return False, (
+            "⛔️ سهمیهٔ دانلود امروزت تمام شده.\n"
+            "فردا دوباره می‌تونی دانلود کنی.\n\n"
+            "برای دانلود نامحدود و دسترسی به پلی‌لیست، VIP شو."
+        )
+    return True, None
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.from_user:
@@ -524,6 +842,10 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not await is_member(uid, context):
         return await force_join(update, context)
+
+    can_dl, msg_text = await check_free_user_limit(uid)
+    if not can_dl:
+        return await update.message.reply_text(msg_text)
 
     audio = update.message.audio or update.message.document
     if not audio:
@@ -555,15 +877,20 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             size = os.path.getsize(final)
             caption = f"🎵 {name}\n🔗 @{CHANNEL_USERNAME}"
 
-            await msg.edit_text("📡 در حال ارسال به کانال…")
+            await msg.edit_text("📡 در حال ارسال…")
+
+            # اگر VIP باشد، مستقیم برای خودش؛ اگر نباشد، به کانال
+            target_chat = uid if await is_vip(uid) else CHANNEL_ID
 
             with open(final, "rb") as f:
                 if size <= MAX_FILE_SIZE:
-                    await context.bot.send_audio(CHANNEL_ID, f, filename=name + ".mp3", caption=caption)
+                    await context.bot.send_audio(target_chat, f, filename=name + ".mp3", caption=caption)
                 else:
-                    await context.bot.send_document(CHANNEL_ID, f, filename=name + ".mp3", caption=caption)
+                    await context.bot.send_document(target_chat, f, filename=name + ".mp3", caption=caption)
 
             await add_history(uid, name, "forwarded")
+            await increment_user_daily_usage(uid, date.today())
+            await log_analytics(uid, "download", {"type": "file"})
             await msg.edit_text("✅ فایل با موفقیت پردازش و ارسال شد.")
         except Exception as e:
             logging.error(f"Error processing audio: {e}")
@@ -588,7 +915,133 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = q.data
     uid = q.from_user.id
 
-    # کیفیت
+    # ================= ADMIN PANEL =================
+    if data.startswith("admin:"):
+        if not await is_admin(uid):
+            return await q.edit_message_text("⛔️ شما به پنل مدیریت دسترسی ندارید.")
+        action = data.split(":", 1)[1]
+
+        # مدیریت VIP
+        if action == "vip":
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ فعال‌سازی/تمدید VIP", callback_data="admin:vip_add")],
+            ])
+            return await q.edit_message_text("👑 مدیریت VIP:", reply_markup=kb)
+
+        if action == "vip_add":
+            admin_flows[uid] = {"mode": "vip_add", "data": {}}
+            return await q.edit_message_text(
+                "👑 فعال‌سازی/تمدید VIP\n\n"
+                "آیدی عددی کاربر را ارسال کن (user_id)."
+            )
+
+        # تنظیمات محدودیت کاربران معمولی
+        if action == "limits":
+            limits = await get_user_limits()
+            txt = (
+                "⚙️ تنظیمات کاربران معمولی:\n\n"
+                f"• حداکثر دانلود روزانه: {limits['max_daily_downloads']}\n"
+                f"• حداکثر ترک پلی‌لیست: {limits['max_playlist_tracks']} (0 یعنی ممنوع)\n"
+                f"• حداکثر کیفیت: {limits['max_quality']}kbps\n\n"
+                "برای تغییر هرکدام، از گزینه‌های زیر استفاده کن."
+            )
+            kb = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("⬆️ افزایش دانلود/روز", callback_data="admin:limits_inc"),
+                    InlineKeyboardButton("⬇️ کاهش دانلود/روز", callback_data="admin:limits_dec"),
+                ],
+                [
+                    InlineKeyboardButton("📀 اجازه پلی‌لیست (تغییر)", callback_data="admin:limits_toggle_pl"),
+                ]
+            ])
+            return await q.edit_message_text(txt, reply_markup=kb)
+
+        if action == "limits_inc":
+            limits = await get_user_limits()
+            new_val = limits["max_daily_downloads"] + 1
+            await update_user_limits({"max_daily_downloads": new_val})
+            return await q.edit_message_text(f"✅ حداکثر دانلود روزانه روی {new_val} تنظیم شد.")
+
+        if action == "limits_dec":
+            limits = await get_user_limits()
+            new_val = max(0, limits["max_daily_downloads"] - 1)
+            await update_user_limits({"max_daily_downloads": new_val})
+            return await q.edit_message_text(f"✅ حداکثر دانلود روزانه روی {new_val} تنظیم شد.")
+
+        if action == "limits_toggle_pl":
+            limits = await get_user_limits()
+            current = limits["max_playlist_tracks"]
+            new_val = 0 if current > 0 else 9999
+            await update_user_limits({"max_playlist_tracks": new_val})
+            state_txt = "❌ پلی‌لیست برای کاربران معمولی ممنوع شد." if new_val == 0 else "✅ پلی‌لیست برای کاربران معمولی فعال شد."
+            return await q.edit_message_text(state_txt)
+
+        # سیستم تبلیغات
+        if action == "ads":
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📢 به همه کاربران", callback_data="admin:ads_all")],
+                [InlineKeyboardButton("👑 فقط VIP", callback_data="admin:ads_vip")],
+                [InlineKeyboardButton("👤 فقط کاربران معمولی", callback_data="admin:ads_free")],
+            ])
+            return await q.edit_message_text("📢 سیستم تبلیغات:", reply_markup=kb)
+
+        if action in ("ads_all", "ads_vip", "ads_free"):
+            target = {
+                "ads_all": "all",
+                "ads_vip": "vip",
+                "ads_free": "free",
+            }[action]
+            admin_flows[uid] = {"mode": "ads_text", "data": {"target": target}}
+            return await q.edit_message_text(
+                "📢 متن پیام تبلیغاتی را ارسال کن.\n"
+                "فعلاً فقط متن پشتیبانی می‌شود."
+            )
+
+        # مدیریت ادمین‌ها
+        if action == "admins":
+            if not await is_owner(uid):
+                return await q.edit_message_text("⛔️ فقط مالک ربات می‌تواند ادمین‌ها را مدیریت کند.")
+            admins = await list_admins()
+            lines = []
+            for a in admins:
+                role = a.get("role", "admin")
+                lines.append(f"{a['user_id']} — {role}")
+            txt = "🛠 مدیریت ادمین‌ها:\n\n" + ("\n".join(lines) if lines else "هنوز ادمینی ثبت نشده.")
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ اضافه کردن ادمین", callback_data="admin:admins_add")],
+                [InlineKeyboardButton("➖ حذف ادمین", callback_data="admin:admins_remove")],
+            ])
+            return await q.edit_message_text(txt, reply_markup=kb)
+
+        if action == "admins_add":
+            if not await is_owner(uid):
+                return await q.edit_message_text("⛔️ فقط مالک ربات می‌تواند ادمین اضافه کند.")
+            admin_flows[uid] = {"mode": "admin_add", "data": {}}
+            return await q.edit_message_text("آیدی عددی کسی که می‌خوای ادمین کنی رو بفرست.")
+
+        if action == "admins_remove":
+            if not await is_owner(uid):
+                return await q.edit_message_text("⛔️ فقط مالک ربات می‌تواند ادمین حذف کند.")
+            admin_flows[uid] = {"mode": "admin_remove", "data": {}}
+            return await q.edit_message_text(
+                "آیدی عددی ادمینی که می‌خوای حذف کنی رو بفرست.\n"
+                "Owner (خودت) قابل حذف نیست."
+            )
+
+        # آمار
+        if action == "stats":
+            stats = await get_basic_stats()
+            txt = (
+                "📊 آمار کلی:\n\n"
+                f"• تعداد کل کاربران: {stats['users_count']}\n"
+                f"• تعداد کاربران VIP: {stats['vip_count']}\n"
+                f"• دانلودهای امروز: {stats['downloads_today']}\n"
+            )
+            return await q.edit_message_text(txt)
+
+        return
+
+    # ================= کیفیت =================
     if data.startswith("q_"):
         mapping = {
             "q_best": "best",
@@ -599,6 +1052,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         q_key = data
         if q_key in mapping:
             await set_user_quality(uid, mapping[q_key])
+            await log_analytics(uid, "quality_change", {"quality": mapping[q_key]})
             return await q.edit_message_text(f"🎚 کیفیت روی {mapping[q_key]} تنظیم شد.")
         return
 
@@ -615,6 +1069,15 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pl = pending_playlists.get(uid)
         if not pl or pl["job_id"] != job_id:
             return await q.edit_message_text("❌ اطلاعات پلی‌لیست پیدا نشد.")
+
+        # محدودیت پلی‌لیست برای کاربران معمولی:
+        if not await is_vip(uid):
+            limits = await get_user_limits()
+            if limits["max_playlist_tracks"] == 0:
+                return await q.edit_message_text(
+                    "⛔️ دانلود پلی‌لیست فقط برای کاربران VIP فعال است.\n"
+                    "برای فعال‌سازی VIP با ادمین تماس بگیر."
+                )
 
         total = len(pl["tracks"])
         indices = list(range(total))
@@ -642,6 +1105,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pl = pending_playlists.get(uid)
         if not pl or pl["job_id"] != job_id:
             return await q.edit_message_text("❌ اطلاعات پلی‌لیست پیدا نشد.")
+
+        if not await is_vip(uid):
+            limits = await get_user_limits()
+            if limits["max_playlist_tracks"] == 0:
+                return await q.edit_message_text(
+                    "⛔️ انتخاب دستی و دانلود پلی‌لیست فقط برای کاربران VIP فعال است."
+                )
 
         total = len(pl["tracks"])
         lines = []
@@ -698,6 +1168,69 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_member(uid, context):
         return await force_join(update, context)
 
+    # اگر در حالت جریان ادمین هستیم
+    if uid in admin_flows:
+        flow = admin_flows[uid]
+        mode = flow["mode"]
+
+        # VIP Add
+        if mode == "vip_add":
+            try:
+                target_id = int(text.strip())
+            except ValueError:
+                return await update.message.reply_text("آیدی نامعتبر است. دوباره بفرست.")
+            admin_flows[uid] = {"mode": "vip_add_plan", "data": {"target_id": target_id}}
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("ماهانه (30 روز)", callback_data="admin:vip_plan_monthly")],
+                [InlineKeyboardButton("سه‌ماهه (90 روز)", callback_data="admin:vip_plan_quarterly")],
+                [InlineKeyboardButton("سالانه (365 روز)", callback_data="admin:vip_plan_yearly")],
+            ])
+            return await update.message.reply_text(
+                f"کاربر {target_id} انتخاب شد.\n"
+                "پلن VIP را انتخاب کن:",
+                reply_markup=kb
+            )
+
+        # Admin Add
+        if mode == "admin_add":
+            if not await is_owner(uid):
+                admin_flows.pop(uid, None)
+                return await update.message.reply_text("⛔️ فقط مالک ربات می‌تواند ادمین اضافه کند.")
+            try:
+                new_admin_id = int(text.strip())
+            except ValueError:
+                return await update.message.reply_text("آیدی نامعتبر است. دوباره بفرست.")
+            await add_admin(new_admin_id)
+            admin_flows.pop(uid, None)
+            return await update.message.reply_text(f"✅ {new_admin_id} به عنوان ادمین اضافه شد.")
+
+        # Admin Remove
+        if mode == "admin_remove":
+            if not await is_owner(uid):
+                admin_flows.pop(uid, None)
+                return await update.message.reply_text("⛔️ فقط مالک ربات می‌تواند ادمین حذف کند.")
+            try:
+                rm_admin_id = int(text.strip())
+            except ValueError:
+                return await update.message.reply_text("آیدی نامعتبر است. دوباره بفرست.")
+            if rm_admin_id == OWNER_ID:
+                admin_flows.pop(uid, None)
+                return await update.message.reply_text("⛔️ نمی‌تونی Owner رو حذف کنی.")
+            await remove_admin(rm_admin_id)
+            admin_flows.pop(uid, None)
+            return await update.message.reply_text(f"✅ ادمین {rm_admin_id} حذف شد.")
+
+        # Ads text
+        if mode == "ads_text":
+            target = flow["data"]["target"]
+            admin_flows.pop(uid, None)
+            await update.message.reply_text("📢 در حال ارسال پیام به کاربران…")
+            await broadcast_message(context, text, target)
+            return
+
+        # اگر mode ناشناخته بود
+        admin_flows.pop(uid, None)
+
     # حالت انتخاب دستی پلی‌لیست
     if uid in pending_playlists and pending_playlists[uid].get("await_selection"):
         pl = pending_playlists[uid]
@@ -733,6 +1266,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = await resolve_soundcloud_url(raw_url)
     user_quality = await get_user_quality(uid)
 
+    # اگر کاربر معمولی و پلی‌لیست باشد، جلوتر محدود می‌کنیم
     info_msg = await update.message.reply_text("🔍 در حال تحلیل لینک SoundCloud…")
 
     # Job ناتمام؟
@@ -758,7 +1292,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # تحلیل اولیه پلی‌لیست/ست/تک ترک
     try:
-        # مثل نسخهٔ قبلی: yt-dlp -J
         json_raw = os.popen(f'yt-dlp -J "{url}"').read()
         data = json.loads(json_raw)
     except Exception as e:
@@ -767,7 +1300,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     tracks = []
     playlist_title = data.get("title") or "SoundCloud"
+    is_playlist = False
     if "entries" in data and data["entries"]:
+        is_playlist = True
         for entry in data["entries"]:
             t_title = entry.get("title") or "Track"
             t_url = entry.get("webpage_url") or entry.get("url") or url
@@ -779,7 +1314,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total = len(tracks)
     logging.info(f"[Playlist] User {uid} - {total} tracks detected from SoundCloud.")
 
-    # Job جدید برای Resume با Supabase
+    # محدودیت پلی‌لیست برای کاربران معمولی
+    if is_playlist and not await is_vip(uid):
+        limits = await get_user_limits()
+        if limits["max_playlist_tracks"] == 0:
+            return await info_msg.edit_text(
+                "⛔️ دانلود پلی‌لیست فقط برای کاربران VIP فعال است.\n"
+                "برای فعال‌سازی VIP با ادمین تماس بگیر."
+            )
+
+    await log_analytics(uid, "playlist" if is_playlist else "single", {"total": total})
+
+    # Job جدید برای Resume
     job_id = uuid4().hex
     await create_job(job_id, uid, playlist_title, url, total)
     await create_job_tracks(job_id, tracks)
@@ -907,18 +1453,22 @@ async def process_playlist(uid: int, context: ContextTypes.DEFAULT_TYPE, pl: dic
                 f"🔗 @{CHANNEL_USERNAME}"
             )
 
-            await update_status(pos, "ارسال به کانال", title)
+            await update_status(pos, "ارسال", title)
             logging.info(f"[Playlist] ({pos+1}/{total}) Sending: {title}")
+
+            target_chat = uid if await is_vip(uid) else CHANNEL_ID
 
             with open(final, "rb") as f:
                 try:
                     if size <= MAX_FILE_SIZE:
-                        await context.bot.send_audio(CHANNEL_ID, f, filename=title + ".mp3", caption=caption)
+                        await context.bot.send_audio(target_chat, f, filename=title + ".mp3", caption=caption)
                     else:
-                        await context.bot.send_document(CHANNEL_ID, f, filename=title + ".mp3", caption=caption)
+                        await context.bot.send_document(target_chat, f, filename=title + ".mp3", caption=caption)
                     sent += 1
                     await add_history(uid, title, playlist_title)
                     await mark_track_sent(job_id, idx)
+                    await increment_user_daily_usage(uid, date.today())
+                    await log_analytics(uid, "download", {"type": "playlist_track"})
                 except Exception as e:
                     logging.error(f"[Playlist] Send error for {title}: {e}")
                 finally:
@@ -952,7 +1502,6 @@ async def process_playlist(uid: int, context: ContextTypes.DEFAULT_TYPE, pl: dic
 # =========================================================
 
 async def process_playlist_job_resume(uid: int, context: ContextTypes.DEFAULT_TYPE, job_id: str, pending_indices_with_titles):
-    # گرفتن اطلاعات job از Supabase
     rows = await db.select("jobs", {"job_id": job_id}, limit=1)
     if not rows:
         return
@@ -967,7 +1516,6 @@ async def process_playlist_job_resume(uid: int, context: ContextTypes.DEFAULT_TY
     quality = await get_user_quality(uid)
     fmt = get_format_for_quality(quality)
 
-    # دوباره info کامل پلی‌لیست را می‌گیریم تا URLهای تکی ترک‌ها را داشته باشیم
     json_raw = os.popen(f'yt-dlp -J "{url}"').read()
     data = json.loads(json_raw)
     all_tracks = []
@@ -1023,14 +1571,18 @@ async def process_playlist_job_resume(uid: int, context: ContextTypes.DEFAULT_TY
             )
             size = os.path.getsize(final)
 
+            target_chat = uid if await is_vip(uid) else CHANNEL_ID
+
             with open(final, "rb") as f:
                 if size <= MAX_FILE_SIZE:
-                    await context.bot.send_audio(CHANNEL_ID, f, filename=title + ".mp3", caption=caption)
+                    await context.bot.send_audio(target_chat, f, filename=title + ".mp3", caption=caption)
                 else:
-                    await context.bot.send_document(CHANNEL_ID, f, filename=title + ".mp3", caption=caption)
+                    await context.bot.send_document(target_chat, f, filename=title + ".mp3", caption=caption)
 
             await mark_track_sent(job_id, idx)
             await add_history(uid, title, playlist_title)
+            await increment_user_daily_usage(uid, date.today())
+            await log_analytics(uid, "download", {"type": "playlist_resume"})
             sent += 1
         except Exception as e:
             logging.error(f"[Resume] Error for track {title}: {e}")
@@ -1048,8 +1600,50 @@ async def process_playlist_job_resume(uid: int, context: ContextTypes.DEFAULT_TY
     logging.info(f"[Resume] Job {job_id} resume finished. Sent {sent}/{total_pending} tracks.")
 
 # =========================================================
+# =================== BROADCAST (ADS) =====================
+# =========================================================
+
+async def get_all_user_ids():
+    rows = await db.select("users")
+    return [r["user_id"] for r in rows]
+
+async def get_all_vip_user_ids():
+    rows = await db.select("vip_users")
+    return [r["user_id"] for r in rows]
+
+async def broadcast_message(context: ContextTypes.DEFAULT_TYPE, text: str, target: str):
+    # target: all / vip / free
+    all_ids = await get_all_user_ids()
+    vip_ids = set(await get_all_vip_user_ids())
+
+    if target == "all":
+        ids = all_ids
+    elif target == "vip":
+        ids = [uid for uid in all_ids if uid in vip_ids]
+    else:  # free
+        ids = [uid for uid in all_ids if uid not in vip_ids]
+
+    success = 0
+    fail = 0
+    for u in ids:
+        try:
+            await context.bot.send_message(u, text)
+            success += 1
+            await log_analytics(u, "broadcast_received", {"target": target})
+        except Exception:
+            fail += 1
+        await asyncio.sleep(0.1)  # برای جلوگیری از flood
+
+    logging.info(f"Broadcast done: target={target}, success={success}, fail={fail}")
+
+# =========================================================
 # ============================ MAIN ========================
 # =========================================================
+
+async def post_init(app: Application):
+    await start_workers(app)
+    await ensure_owner_admin()
+    logging.info("Post-init done (workers + owner admin).")
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
@@ -1057,12 +1651,14 @@ def main():
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("history", history_cmd))
     app.add_handler(CommandHandler("quality", quality_cmd))
+    app.add_handler(CommandHandler("vip", vip_cmd))
+    app.add_handler(CommandHandler("admin", admin_cmd))
 
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.AUDIO | filters.Document.AUDIO, handle_audio))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    app.post_init = start_workers
+    app.post_init = post_init
 
     app.run_webhook(
         listen="0.0.0.0",
