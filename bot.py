@@ -1218,16 +1218,15 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "🎵 برای دانلود، فقط لینک SoundCloud یا فایل صوتی را اینجا بفرست."
             )
         if action == "vip":
-            # فراخوانی /vip به‌صورت داخلی
-            fake_update = Update(
-                update.update_id,
-                message=None
-            )
-            await vip_cmd(update, context)
-            return
+    await context.bot.send_message(uid, "👑 وضعیت VIP:")
+    await vip_cmd(update, context)
+    return
+
         if action == "wallet":
-            await wallet_cmd(update, context)
-            return
+    await context.bot.send_message(uid, "💰 کیف پول:")
+    await wallet_cmd(update, context)
+    return
+
         if action == "referral":
             wallet = await get_wallet(uid)
             ref_count = await count_referrals(uid)
