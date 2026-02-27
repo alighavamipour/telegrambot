@@ -1192,12 +1192,12 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             size = os.path.getsize(final)
             prefix = "👑 VIP Download\n" if isvip else ""
             caption = f"{prefix}🎵 {name}\n🔗 @{CHANNEL_USERNAME}"
-            await msg.edit_text("📡 در حال ارسال…")
+                        await msg.edit_text("📡 در حال ارسال…")
 
-            # ارسال فایل با توجه به تنظیمات VIP
+            # VIP or normal user?
             isvip = await is_vip(uid)
 
-            # تعیین مقصد ارسال
+            # Determine where to send
             if isvip:
                 vip_settings = await get_vip_settings(uid)
                 if vip_settings.get("post_to_channel"):
@@ -1207,7 +1207,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 target_chats = [CHANNEL_ID]
 
-            # ارسال فایل به مقصدها
+            # Send file
             for chat in target_chats:
                 with open(final, "rb") as f:
                     if size <= MAX_FILE_SIZE:
@@ -1224,9 +1224,6 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             filename=name + ".mp3",
                             caption=caption
                         )
-
-    
-
 
             await add_history(uid, name, "forwarded")
             await increment_user_daily_usage(uid, date.today())
