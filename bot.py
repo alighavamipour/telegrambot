@@ -1197,7 +1197,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             if isvip:
     vip_settings = await get_vip_settings(uid)
-    if vip_settings["post_to_channel"]:
+        if vip_settings["post_to_channel"]:
         # ارسال هم به کاربر هم به کانال
         target_chats = [uid, CHANNEL_ID]
     else:
