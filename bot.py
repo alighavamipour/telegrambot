@@ -2426,13 +2426,31 @@ async def broadcast_message(context: ContextTypes.DEFAULT_TYPE, text: str, targe
 # =========================================================
 
 async def post_init(app: Application):
+    """این تابع هنگام شروع به کار ربات اجرا می‌شود"""
     await start_workers(app)
     await ensure_owner_admin()
-    logging.info("Post-init done (workers + owner admin).")
+    
+    # تنظیم دکمه‌های منوی ربات در تلگرام
+    await app.bot.set_my_commands([
+        ("start", "🚀 شروع مجدد"),
+        ("quality", "🎧 تنظیم کیفیت"),
+        ("wallet", "💰 کیف پول"),
+        ("vip", "👑 اشتراک ویژه"),
+        ("history", "📜 تاریخچه"),
+    ])
+    
+    # شروع عملیات خود-پینگ برای بیدار نگه داشتن سرور رندر
+    if 'keep_alive' in globals():
+        asyncio.create_task(keep_alive())
+    
+    logging.info("✅ Post-init complete: Workers started and keep_alive task initiated.")
 
 def main():
+    """نقطه شروع اصلی برنامه"""
+    # ساخت اپلیکیشن ربات
     app = Application.builder().token(BOT_TOKEN).build()
 
+    # ثبت دستورات (Handlers)
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("history", history_cmd))
@@ -2441,20 +2459,16 @@ def main():
     app.add_handler(CommandHandler("admin", admin_cmd))
     app.add_handler(CommandHandler("wallet", wallet_cmd))
 
+    # ثبت هندلرهای پیام و دکمه‌ها
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.AUDIO | filters.Document.AUDIO, handle_audio))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
+    # معرفی تابع شروع‌کننده به اپلیکیشن
     app.post_init = post_init
-    async def post_init(app: Application):
-    await start_workers(app)
-    await ensure_owner_admin()
-    
-    # اضافه کردن این خط برای شروع عملیات بیدار نگه داشتن
-    asyncio.create_task(keep_alive())
-    
-    logging.info("Post-init done (workers + keep_alive).")
 
+    # اجرای ربات روی وب‌هوک (مخصوص Render)
+    logging.info("📡 Bot is starting on Webhook...")
     app.run_webhook(
         listen="0.0.0.0",
         port=int(os.getenv("PORT", 10000)),
