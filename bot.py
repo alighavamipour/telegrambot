@@ -427,15 +427,24 @@ async def reset_job(job_id):
     await db.delete("jobs", {"job_id": job_id})
 # --- check post to channel
 async def toggle_vip_post_setting(uid: int):
-    # فرض بر این است که جدولی به نام users داری که فیلد post_to_channel دارد
-    # اگر این فیلد را نداری، باید در دیتابیس اضافه کنی
-    current = await db.select("users", {"user_id": uid})
-    if current:
-        new_val = 0 if current[0].get("post_to_channel", 1) == 1 else 1
-        await db.update("users", {"post_to_channel": new_val}, {"user_id": uid})
-        return new_val
-    return 1 # پیش‌فرض ارسال به کانال
-# -- check post to channel
+    # ۱. گرفتن مقدار فعلی دقیقاً برای همین کاربر
+    rows = await db.select("users", {"user_id": uid}, limit=1)
+    
+    current_val = 1 # پیش‌فرض
+    if rows:
+        # اگر کاربر پیدا شد، مقدار واقعی را بردار
+        db_val = rows[0].get("post_to_channel")
+        current_val = db_val if db_val is not None else 1
+    
+    # ۲. معکوس کردن مقدار
+    new_val = 0 if current_val == 1 else 1
+    
+    # ۳. آپدیت دقیق دیتابیس با شرط user_id
+    # دقت کن که در متد update، آرگومان دوم فیلتر (کجا) هست
+    await db.update("users", {"post_to_channel": new_val}, {"user_id": uid})
+    
+    logging.info(f"User {uid} setting changed from {current_val} to {new_val}")
+    return new_val# -- check post to channel
 # ---------- ADMINS ----------
 async def ensure_owner_admin():
     if not OWNER_ID:
