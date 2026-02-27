@@ -704,6 +704,25 @@ async def count_referrals(inviter_id: int) -> int:
     rows = await db.select("referrals", {"inviter_id": inviter_id})
     return len(rows)
 
+# ---- is posted to channel ----
+async def get_vip_settings(uid: int):
+    rows = await db.select("vip_settings", {"user_id": uid}, limit=1)
+    if rows:
+        return rows[0]
+    return {"post_to_channel": False}
+
+async def set_vip_post_mode(uid: int, mode: bool):
+    await db.upsert(
+        "vip_settings",
+        {
+            "user_id": uid,
+            "post_to_channel": mode,
+            "updated_at": datetime.utcnow().isoformat(),
+        },
+        on_conflict="user_id"
+    )
+
+
 # =========================================================
 # =========================== UTILS ========================
 # =========================================================
@@ -1023,6 +1042,7 @@ async def vip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     info = await get_vip_info(uid)
     wallet = await get_wallet(uid)
     ref_count = await count_referrals(uid)
+    [InlineKeyboardButton("📤 ارسال در کانال (VIP)", callback_data="vip:post_mode")]
     if await is_vip(uid):
         exp = info["expires_at"]
         txt = (
@@ -1175,7 +1195,16 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await msg.edit_text("📡 در حال ارسال…")
 
-            target_chat = uid if isvip else CHANNEL_ID
+            if isvip:
+    vip_settings = await get_vip_settings(uid)
+    if vip_settings["post_to_channel"]:
+        # ارسال هم به کاربر هم به کانال
+        target_chats = [uid, CHANNEL_ID]
+    else:
+        target_chats = [uid]
+else:
+    target_chats = [CHANNEL_ID]
+
 
             with open(final, "rb") as f:
                 if size <= MAX_FILE_SIZE:
@@ -1226,6 +1255,31 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await vip_cmd(
                 Update(update.update_id, message=q.message),
                 context
+                if data == "vip:post_mode":
+    settings = await get_vip_settings(uid)
+    current = settings["post_to_channel"]
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("فقط برای من", callback_data="vip:post_off")],
+        [InlineKeyboardButton("من + کانال", callback_data="vip:post_on")],
+    ])
+
+    return await context.bot.send_message(
+        uid,
+        f"📤 تنظیم ارسال VIP:\n\n"
+        f"وضعیت فعلی: {'ارسال در کانال فعال است' if current else 'فقط برای خودت ارسال می‌شود'}",
+        reply_markup=kb
+    )
+
+
+if data == "vip:post_on":
+    await set_vip_post_mode(uid, True)
+    return await context.bot.send_message(uid, "📤 ارسال در کانال فعال شد.")
+
+if data == "vip:post_off":
+    await set_vip_post_mode(uid, False)
+    return await context.bot.send_message(uid, "📥 فقط برای خودت ارسال می‌شود.")
+
             )
 
         # 💰 کیف پول
@@ -1994,7 +2048,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await info_msg.edit_text("📡 در حال ارسال…")
 
-        target_chat = uid if isvip else CHANNEL_ID
+        for chat in target_chats:
+    with open(final_path, "rb") as f:
+        if size <= MAX_FILE_SIZE:
+            await context.bot.send_audio(chat, f, filename=title + ".mp3", caption=caption)
+        else:
+            await context.bot.send_document(chat, f, filename=title + ".mp3", caption=caption)
+
 
         try:
             with open(final_path, "rb") as f:
