@@ -1198,31 +1198,38 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if isvip:
     isvip = await is_vip(uid)
 
-if isvip:
-    vip_settings = await get_vip_settings(uid)
-    if vip_settings["post_to_channel"]:
-        target_chats = [uid, CHANNEL_ID]
-    else:
-        target_chats = [uid]
-else:
-    target_chats = [CHANNEL_ID]
+if isvip:            # ارسال فایل با توجه به تنظیمات VIP
+            isvip = await is_vip(uid)
 
-for chat in target_chats:
-    with open(final_path, "rb") as f:
-        if size <= MAX_FILE_SIZE:
-            await context.bot.send_audio(
-                chat,
-                f,
-                filename=title + ".mp3",
-                caption=caption
-            )
-        else:
-            await context.bot.send_document(
-                chat,
-                f,
-                filename=title + ".mp3",
-                caption=caption
-            )
+            # تعیین مقصد ارسال
+            if isvip:
+                vip_settings = await get_vip_settings(uid)
+                if vip_settings.get("post_to_channel"):
+                    target_chats = [uid, CHANNEL_ID]
+                else:
+                    target_chats = [uid]
+            else:
+                target_chats = [CHANNEL_ID]
+
+            # ارسال فایل به مقصدها
+            for chat in target_chats:
+                with open(final, "rb") as f:
+                    if size <= MAX_FILE_SIZE:
+                        await context.bot.send_audio(
+                            chat,
+                            f,
+                            filename=name + ".mp3",
+                            caption=caption
+                        )
+                    else:
+                        await context.bot.send_document(
+                            chat,
+                            f,
+                            filename=name + ".mp3",
+                            caption=caption
+                        )
+
+    
 
 
             await add_history(uid, name, "forwarded")
