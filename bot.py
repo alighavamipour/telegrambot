@@ -1192,13 +1192,9 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             size = os.path.getsize(final)
             prefix = "👑 VIP Download\n" if isvip else ""
             caption = f"{prefix}🎵 {name}\n🔗 @{CHANNEL_USERNAME}"
+                        await msg.edit_text("📡 در حال ارسال…")
 
-            await msg.edit_text("📡 در حال ارسال…")
-
-            if isvip:
-    isvip = await is_vip(uid)
-
-if isvip:            # ارسال فایل با توجه به تنظیمات VIP
+            # ارسال فایل با توجه به تنظیمات VIP
             isvip = await is_vip(uid)
 
             # تعیین مقصد ارسال
