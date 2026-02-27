@@ -2051,7 +2051,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prefix = "👑 VIP Download\n" if isvip else ""
         caption = f"{prefix}🎵 {title}\n🔗 @{CHANNEL_USERNAME}"
 
-        await info_msg.edit_text("📡 در حال ارسال…")target_chat = uid if isvip else CHANNEL_ID
+        await info_msg.edit_text("📡 در حال ارسال…")
+        target_chat = uid if isvip else CHANNEL_ID
 
         try:
             with open(final_path, "rb") as f:
