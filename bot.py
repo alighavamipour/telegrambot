@@ -1413,11 +1413,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         return InlineKeyboardMarkup(kb)
         if query.data == "toggle_post_setting":
-        new_status = await toggle_vip_post_setting(uid)
-        txt = "✅ تنظیمات تغییر کرد. آهنگ‌های شما از این پس در کانال هم منتشر می‌شوند." if new_status == 1 else "❌ تنظیمات تغییر کرد. آهنگ‌های شما فقط به صورت شخصی ارسال می‌شوند."
-        await query.answer(txt, show_alert=True)
-        # آپدیت کردن دکمه‌ها
-        await query.edit_message_reply_markup(reply_markup=await get_vip_keyboard(uid))
+            new_status = await toggle_vip_post_setting(uid)
+            txt = "✅ تنظیمات تغییر کرد. آهنگ‌های شما از این پس در کانال هم منتشر می‌شوند." if new_status == 1 else "❌ تنظیمات تغییر کرد. آهنگ‌های شما فقط به صورت شخصی ارسال می‌شوند."
+            await query.answer(txt, show_alert=True)
+            # آپدیت کردن دکمه‌ها
+            await query.edit_message_reply_markup(reply_markup=await get_vip_keyboard(uid))
     # ---- check post to channel  vip
     # ================= بررسی عضویت =================
     if data == "check_join":
