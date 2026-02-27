@@ -1435,7 +1435,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton(f"ارسال به کانال: {status}", callback_data="toggle_post_setting")],
             [InlineKeyboardButton("💎 خرید اشتراک / تمدید", callback_data="buy_vip")],
             ]
-            return InlineKeyboardMarkup(kb)
+        return InlineKeyboardMarkup(kb)
     # ---- check post to channel  vip
     # ================= بررسی عضویت =================
     if data == "check_join":
