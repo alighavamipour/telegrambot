@@ -2054,11 +2054,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await info_msg.edit_text("📡 در حال ارسال…")
 
         for chat in target_chats:
-    with open(final_path, "rb") as f:
+    with open(final, "rb") as f:
         if size <= MAX_FILE_SIZE:
-            await context.bot.send_audio(chat, f, filename=title + ".mp3", caption=caption)
+            await context.bot.send_audio(
+                chat_id=chat,
+                audio=f,
+                filename=name + ".mp3",
+                caption=caption,
+            )
         else:
-            await context.bot.send_document(chat, f, filename=title + ".mp3", caption=caption)
+            await context.bot.send_document(
+                chat_id=chat,
+                document=f,
+                filename=name + ".mp3",
+                caption=caption,
+            )
+
 
 
         try:
