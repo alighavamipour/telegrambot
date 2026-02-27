@@ -1404,14 +1404,14 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ---- check post to channel vip
     # در بخشی که دکمه‌های VIP رو می‌سازی
     async def get_vip_keyboard(uid):
-    user_data = await db.select("users", {"user_id": uid})
-    status = "✅ روشن" if user_data[0].get("post_to_channel", 1) == 1 else "❌ خاموش"
+        user_data = await db.select("users", {"user_id": uid})
+        status = "✅ روشن" if user_data[0].get("post_to_channel", 1) == 1 else "❌ خاموش"
     
-    kb = [
+        kb = [
         [InlineKeyboardButton(f"ارسال به کانال: {status}", callback_data="toggle_post_setting")],
         [InlineKeyboardButton("خرید اشتراک / تمدید", callback_data="buy_vip")],
-    ]
-    return InlineKeyboardMarkup(kb)
+        ]
+        return InlineKeyboardMarkup(kb)
         if query.data == "toggle_post_setting":
         new_status = await toggle_vip_post_setting(uid)
         txt = "✅ تنظیمات تغییر کرد. آهنگ‌های شما از این پس در کانال هم منتشر می‌شوند." if new_status == 1 else "❌ تنظیمات تغییر کرد. آهنگ‌های شما فقط به صورت شخصی ارسال می‌شوند."
