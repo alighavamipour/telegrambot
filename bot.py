@@ -137,6 +137,8 @@ import logging
 import asyncio
 import secrets
 import string
+import aiohttp
+import asyncio
 from uuid import uuid4
 from datetime import datetime, date, timedelta
 
@@ -670,7 +672,21 @@ async def get_wallet(uid: int):
     if rows:
         return rows[0]
     return await get_or_create_wallet(uid)
-
+# --- keep alive---
+async def keep_alive():
+    """این تابع هر ۱۲ دقیقه یک بار به آدرس ربات درخواست می‌فرستد تا سرور نخوابد"""
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                # آدرس BASE_URL خودت را اینجا قرار بده
+                async with session.get(BASE_URL) as response:
+                    logging.info(f"Self-ping successful: {response.status}")
+        except Exception as e:
+            logging.error(f"Self-ping failed: {e}")
+        
+        # ۱۲ دقیقه صبر می‌کند (Render بعد از ۱۵ دقیقه می‌خوابد)
+        await asyncio.sleep(720)
+# --- keep alive ---
 # ---------- WALLET TRANSACTIONS ----------
 async def add_wallet_tx(from_user, to_user, amount: int, tx_type: str, meta: dict = None):
     await db.insert(
