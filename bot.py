@@ -1273,6 +1273,22 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    if query.data == "toggle_post_setting":
+        # تغییر وضعیت در دیتابیس
+        new_status = await toggle_vip_post_setting(uid)
+        
+        # تعیین متن پیام بر اساس وضعیت جدید
+        if new_status == 1:
+            txt = "✅ تنظیمات تغییر کرد. آهنگ‌های شما از این پس در کانال هم منتشر می‌شوند."
+        else:
+            txt = "❌ تنظیمات تغییر کرد. آهنگ‌های شما فقط به صورت شخصی برایتان ارسال می‌شوند."
+            
+        await query.answer(txt, show_alert=True)
+        
+        # آپدیت لحظه‌ای دکمه‌ها برای کاربر
+        new_kb = await get_vip_keyboard(uid)
+        await query.edit_message_reply_markup(reply_markup=new_kb)
+        return # پایان پردازش این کلیک
     await q.answer()
     data = q.data
     uid = q.from_user.id
@@ -1404,20 +1420,22 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ---- check post to channel vip
     # در بخشی که دکمه‌های VIP رو می‌سازی
     async def get_vip_keyboard(uid):
+        # دریافت اطلاعات کاربر از دیتابیس
         user_data = await db.select("users", {"user_id": uid})
-        status = "✅ روشن" if user_data[0].get("post_to_channel", 1) == 1 else "❌ خاموش"
+    
+        # بررسی وضعیت (اگر کاربر وجود نداشت یا فیلد خالی بود، پیش‌فرض ۱ یا روشن در نظر می‌گیریم)
+            if user_data and "post_to_channel" in user_data[0]:
+                is_on = user_data[0]["post_to_channel"] == 1
+            else:
+                is_on = True
+        
+        status = "✅ روشن" if is_on else "❌ خاموش"
     
         kb = [
-        [InlineKeyboardButton(f"ارسال به کانال: {status}", callback_data="toggle_post_setting")],
-        [InlineKeyboardButton("خرید اشتراک / تمدید", callback_data="buy_vip")],
-        ]
-        return InlineKeyboardMarkup(kb)
-        if query.data == "toggle_post_setting":
-            new_status = await toggle_vip_post_setting(uid)
-            txt = "✅ تنظیمات تغییر کرد. آهنگ‌های شما از این پس در کانال هم منتشر می‌شوند." if new_status == 1 else "❌ تنظیمات تغییر کرد. آهنگ‌های شما فقط به صورت شخصی ارسال می‌شوند."
-            await query.answer(txt, show_alert=True)
-            # آپدیت کردن دکمه‌ها
-            await query.edit_message_reply_markup(reply_markup=await get_vip_keyboard(uid))
+            [InlineKeyboardButton(f"ارسال به کانال: {status}", callback_data="toggle_post_setting")],
+            [InlineKeyboardButton("💎 خرید اشتراک / تمدید", callback_data="buy_vip")],
+            ]
+            return InlineKeyboardMarkup(kb)
     # ---- check post to channel  vip
     # ================= بررسی عضویت =================
     if data == "check_join":
