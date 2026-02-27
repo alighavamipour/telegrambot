@@ -2051,33 +2051,24 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prefix = "👑 VIP Download\n" if isvip else ""
         caption = f"{prefix}🎵 {title}\n🔗 @{CHANNEL_USERNAME}"
 
-        await info_msg.edit_text("📡 در حال ارسال…")
-
-        for chat in target_chats:
-    with open(final, "rb") as f:
-        if size <= MAX_FILE_SIZE:
-            await context.bot.send_audio(
-                chat_id=chat,
-                audio=f,
-                filename=name + ".mp3",
-                caption=caption,
-            )
-        else:
-            await context.bot.send_document(
-                chat_id=chat,
-                document=f,
-                filename=name + ".mp3",
-                caption=caption,
-            )
-
-
+        await info_msg.edit_text("📡 در حال ارسال…")target_chat = uid if isvip else CHANNEL_ID
 
         try:
             with open(final_path, "rb") as f:
                 if size <= MAX_FILE_SIZE:
-                    await context.bot.send_audio(target_chat, f, filename=title + ".mp3", caption=caption)
+                    await context.bot.send_audio(
+                        chat_id=target_chat,
+                        audio=f,
+                        filename=title + ".mp3",
+                        caption=caption
+                    )
                 else:
-                    await context.bot.send_document(target_chat, f, filename=title + ".mp3", caption=caption)
+                    await context.bot.send_document(
+                        chat_id=target_chat,
+                        document=f,
+                        filename=title + ".mp3",
+                        caption=caption
+                    )
 
             await add_history(uid, title, "SoundCloud")
             await increment_user_daily_usage(uid, date.today())
@@ -2088,8 +2079,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await info_msg.edit_text("❌ خطایی در ارسال فایل رخ داد.")
         finally:
             if os.path.exists(final_path):
-                try:
-                    os.remove(final_path)
+                os.remove(final_path)
                 except Exception:
                     pass
 
