@@ -2446,6 +2446,14 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     app.post_init = post_init
+    async def post_init(app: Application):
+    await start_workers(app)
+    await ensure_owner_admin()
+    
+    # اضافه کردن این خط برای شروع عملیات بیدار نگه داشتن
+    asyncio.create_task(keep_alive())
+    
+    logging.info("Post-init done (workers + keep_alive).")
 
     app.run_webhook(
         listen="0.0.0.0",
