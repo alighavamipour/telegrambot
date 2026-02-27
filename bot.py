@@ -137,8 +137,6 @@ import logging
 import asyncio
 import secrets
 import string
-import aiohttp
-import asyncio
 from uuid import uuid4
 from datetime import datetime, date, timedelta
 
@@ -414,32 +412,7 @@ async def mark_track_sent(job_id, index):
         {"job_id": job_id},
         {"updated_at": datetime.utcnow().isoformat()},
     )
-async def get_vip_keyboard(uid):
-    """ساخت کیبورد وی‌آی‌پی با خواندن وضعیت لحظه‌ای از دیتابیس"""
-    try:
-        user_data = await db.select("users", {"user_id": uid})
-        is_on = 1
-        if user_data and "post_to_channel" in user_data[0]:
-            val = user_data[0]["post_to_channel"]
-            is_on = val if val is not None else 1
-    except:
-        is_on = 1
 
-    status_emoji = "✅ روشن" if is_on == 1 else "❌ خاموش"
-    
-    is_user_vip = await is_vip(uid)
-    buttons = []
-    
-    if is_user_vip:
-        buttons.append([InlineKeyboardButton(f"ارسال در کانال: {status_emoji}", callback_data="toggle_post_setting")])
-    else:
-        buttons.append([InlineKeyboardButton("👑 خرید VIP با سکه", callback_data="wallet:buy_vip")])
-        
-    buttons.append([InlineKeyboardButton("💰 کیف پول", callback_data="menu:wallet")])
-    buttons.append([InlineKeyboardButton("👥 دعوت دوستان", callback_data="menu:referral")])
-    
-    return InlineKeyboardMarkup(buttons)
-    
 async def finish_job(job_id):
     await db.update(
         "jobs",
@@ -450,23 +423,7 @@ async def finish_job(job_id):
 async def reset_job(job_id):
     await db.delete("job_tracks", {"job_id": job_id})
     await db.delete("jobs", {"job_id": job_id})
-# --- check post to channel
-async def toggle_vip_post_setting(uid: int):
-    # ۱. گرفتن وضعیت فعلی
-    rows = await db.select("users", {"user_id": uid})
-    current_val = 1
-    if rows:
-        current_val = rows[0].get("post_to_channel", 1)
-        if current_val is None: current_val = 1
 
-    # ۲. معکوس کردن
-    new_val = 0 if current_val == 1 else 1
-    
-    # ۳. آپدیت کردن (دقت کن اول مقدار جدید، بعد شرط ID)
-    await db.update("users", {"post_to_channel": new_val}, {"user_id": uid})
-    
-    return new_val
-    # -- check post to channel
 # ---------- ADMINS ----------
 async def ensure_owner_admin():
     if not OWNER_ID:
@@ -713,21 +670,7 @@ async def get_wallet(uid: int):
     if rows:
         return rows[0]
     return await get_or_create_wallet(uid)
-# --- keep alive---
-async def keep_alive():
-    """این تابع هر ۱۲ دقیقه یک بار به آدرس ربات درخواست می‌فرستد تا سرور نخوابد"""
-    while True:
-        try:
-            async with aiohttp.ClientSession() as session:
-                # آدرس BASE_URL خودت را اینجا قرار بده
-                async with session.get(BASE_URL) as response:
-                    logging.info(f"Self-ping successful: {response.status}")
-        except Exception as e:
-            logging.error(f"Self-ping failed: {e}")
-        
-        # ۱۲ دقیقه صبر می‌کند (Render بعد از ۱۵ دقیقه می‌خوابد)
-        await asyncio.sleep(720)
-# --- keep alive ---
+
 # ---------- WALLET TRANSACTIONS ----------
 async def add_wallet_tx(from_user, to_user, amount: int, tx_type: str, meta: dict = None):
     await db.insert(
@@ -1096,16 +1039,11 @@ async def vip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.from_user:
         return
     uid = update.message.from_user.id
-    
     info = await get_vip_info(uid)
     wallet = await get_wallet(uid)
     ref_count = await count_referrals(uid)
-    is_user_vip = await is_vip(uid)
-
-    # ساخت لیست دکمه‌ها (Keyboard)
-    keyboard_buttons = []
-
-    if is_user_vip:
+    [InlineKeyboardButton("📤 ارسال در کانال (VIP)", callback_data="vip:post_mode")]
+    if await is_vip(uid):
         exp = info["expires_at"]
         txt = (
             "👑 وضعیت VIP شما:\n\n"
@@ -1115,38 +1053,32 @@ async def vip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• دانلود نامحدود\n"
             "• پلی‌لیست و ست کامل\n"
             "• کیفیت بهترین\n"
-            "• ارسال شخصی و کانال\n\n"
+            "• ارسال مستقیم در چت شما\n\n"
             f"💰 موجودی سکه: {wallet['balance']}\n"
             f"👥 تعداد دعوت‌های موفق: {ref_count}\n"
         )
-        
-        # دریافت وضعیت فعلی از دیتابیس برای نمایش روی دکمه
-        user_settings = await db.select("users", {"user_id": uid})
-        is_on = user_settings[0].get("post_to_channel", 1) == 1 if user_settings else True
-        status_emoji = "✅ روشن" if is_on else "❌ خاموش"
-        
-        # اضافه کردن دکمه تنظیمات کانال مخصوص VIPها
-        keyboard_buttons.append([InlineKeyboardButton(f"ارسال در کانال: {status_emoji}", callback_data="toggle_post_setting")])
-        
     else:
         limits = await get_user_limits()
         txt = (
             "❌ شما VIP نیستید.\n\n"
             "کاربران معمولی:\n"
             f"• حداکثر {limits['max_daily_downloads']} دانلود در روز\n"
-            f"• بدون دسترسی به پلی‌لیست\n"
+            f"• بدون دسترسی به پلی‌لیست (در صورت تنظیم)\n"
             f"• کیفیت تا {limits['max_quality']}kbps\n\n"
+            "👑 VIP:\n"
+            "• دانلود نامحدود\n"
+            "• پلی‌لیست و ست کامل\n"
+            "• کیفیت بهترین\n"
+            "• ارسال مستقیم در چت شما\n\n"
             f"💰 موجودی سکه: {wallet['balance']}\n"
             f"👥 دعوت‌های موفق: {ref_count}\n"
+            "می‌توانی با سکه هم VIP بخری."
         )
-        # دکمه خرید VIP برای کاربران معمولی
-        keyboard_buttons.append([InlineKeyboardButton("👑 خرید VIP با سکه", callback_data="wallet:buy_vip")])
-
-    # دکمه‌های مشترک برای همه
-    keyboard_buttons.append([InlineKeyboardButton("💰 کیف پول", callback_data="menu:wallet")])
-    keyboard_buttons.append([InlineKeyboardButton("👥 دعوت دوستان", callback_data="menu:referral")])
-
-    kb = InlineKeyboardMarkup(keyboard_buttons)
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("👑 خرید VIP با سکه", callback_data="wallet:buy_vip")],
+        [InlineKeyboardButton("💰 کیف پول", callback_data="menu:wallet")],
+        [InlineKeyboardButton("👥 دعوت دوستان", callback_data="menu:referral")],
+    ])
     await update.message.reply_text(txt, reply_markup=kb)
 
 async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1263,34 +1195,35 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await msg.edit_text("📡 در حال ارسال…")
 
-            # تعیین مقصد ارسال بر اساس VIP و تنظیم post_to_channel
             if isvip:
-                vip_settings = await get_vip_settings(uid)
-                if vip_settings.get("post_to_channel"):
-                    target_chats = [uid, CHANNEL_ID]
-                else:
-                    target_chats = [uid]
-            else:
-                # کاربران معمولی: فقط کانال
-                target_chats = [CHANNEL_ID]
+    isvip = await is_vip(uid)
 
-            # ارسال فایل به مقصدها
-            for chat in target_chats:
-                with open(final, "rb") as f:
-                    if size <= MAX_FILE_SIZE:
-                        await context.bot.send_audio(
-                            chat_id=chat,
-                            audio=f,
-                            filename=name + ".mp3",
-                            caption=caption,
-                        )
-                    else:
-                        await context.bot.send_document(
-                            chat_id=chat,
-                            document=f,
-                            filename=name + ".mp3",
-                            caption=caption,
-                        )
+if isvip:
+    vip_settings = await get_vip_settings(uid)
+    if vip_settings["post_to_channel"]:
+        target_chats = [uid, CHANNEL_ID]
+    else:
+        target_chats = [uid]
+else:
+    target_chats = [CHANNEL_ID]
+
+for chat in target_chats:
+    with open(final_path, "rb") as f:
+        if size <= MAX_FILE_SIZE:
+            await context.bot.send_audio(
+                chat,
+                f,
+                filename=title + ".mp3",
+                caption=caption
+            )
+        else:
+            await context.bot.send_document(
+                chat,
+                f,
+                filename=title + ".mp3",
+                caption=caption
+            )
+
 
             await add_history(uid, name, "forwarded")
             await increment_user_daily_usage(uid, date.today())
@@ -1309,82 +1242,487 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await queue.put(task)
 
+# =========================================================
+# ====================== CALLBACK HANDLER =================
+# =========================================================
+
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    uid = q.from_user.id
-    data = q.data
-
-    # ================= تنظیمات ارسال VIP (نسخه جدید) =================
-    if data == "toggle_post_setting":
-        # تغییر وضعیت در دیتابیس
-        new_status = await toggle_vip_post_setting(uid)
-        
-        if new_status == 1:
-            txt = "✅ تنظیمات تغییر کرد. آهنگ‌های شما در کانال هم منتشر می‌شوند."
-        else:
-            txt = "❌ تنظیمات تغییر کرد. آهنگ‌های شما فقط برای خودتان ارسال می‌شوند."
-            
-        await q.answer(txt, show_alert=True)
-        
-        # آپدیت لحظه‌ای دکمه‌ها در همان منوی VIP
-        # نکته: تابع get_vip_keyboard باید بیرون از اینجا تعریف شده باشد
-        new_kb = await get_vip_keyboard(uid)
-        await q.edit_message_reply_markup(reply_markup=new_kb)
-        return
-
-    # پاسخ اولیه برای بستن حالت لودینگ دکمه در تلگرام
     await q.answer()
-
-    # ================= تنظیمات قدیمی (اگر هنوز استفاده می‌کنی) =================
-    if data == "vip:post_mode":
-        settings = await get_user_settings(uid) # اصلاح نام تابع
-        current = settings.get("post_to_channel", 1) == 1
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("فقط برای من", callback_data="vip:post_off")],
-            [InlineKeyboardButton("من + کانال", callback_data="vip:post_on")],
-        ])
-        return await context.bot.send_message(
-            uid,
-            f"📤 تنظیم ارسال VIP:\n\nوضعیت فعلی: {'ارسال در کانال فعال' if current else 'ارسال شخصی'}",
-            reply_markup=kb
-        )
-
-    if data == "vip:post_on":
-        await set_vip_post_mode(uid, True)
-        return await context.bot.send_message(uid, "📤 ارسال در کانال فعال شد.")
-
-    if data == "vip:post_off":
-        await set_vip_post_mode(uid, False)
-        return await context.bot.send_message(uid, "📥 فقط برای خودت ارسال می‌شود.")
+    data = q.data
+    uid = q.from_user.id
 
     # ================= منوی اصلی =================
     if data.startswith("menu:"):
         action = data.split(":", 1)[1]
+
+        # 🎵 دانلود موزیک
+        if action == "download":
+            return await context.bot.send_message(
+                uid,
+                "🎵 برای دانلود، فقط لینک SoundCloud یا فایل صوتی را ارسال کن."
+            )
+
+        # 👑 VIP
         if action == "vip":
-            # فراخوانی تابع vip_cmd برای بازگشت به منوی VIP
-            return await vip_cmd(Update(update.update_id, message=q.message), context)
-        
-        # ... بقیه کدهای منو (wallet, referral, help و غیره) را اینجا ادامه دهید ...
+            return await vip_cmd(
+                Update(update.update_id, message=q.message),
+                context
+                if data == "vip:post_mode":
+    settings = await get_vip_settings(uid)
+    current = settings["post_to_channel"]
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("فقط برای من", callback_data="vip:post_off")],
+        [InlineKeyboardButton("من + کانال", callback_data="vip:post_on")],
+    ])
+
+    return await context.bot.send_message(
+        uid,
+        f"📤 تنظیم ارسال VIP:\n\n"
+        f"وضعیت فعلی: {'ارسال در کانال فعال است' if current else 'فقط برای خودت ارسال می‌شود'}",
+        reply_markup=kb
+    )
+
+
+if data == "vip:post_on":
+    await set_vip_post_mode(uid, True)
+    return await context.bot.send_message(uid, "📤 ارسال در کانال فعال شد.")
+
+if data == "vip:post_off":
+    await set_vip_post_mode(uid, False)
+    return await context.bot.send_message(uid, "📥 فقط برای خودت ارسال می‌شود.")
+
+            )
+
+        # 💰 کیف پول
         if action == "wallet":
-             return await wallet_cmd(Update(update.update_id, message=q.message), context)
-        
+            return await wallet_cmd(
+                Update(update.update_id, message=q.message),
+                context
+            )
+
+        # 👥 دعوت دوستان
         if action == "referral":
             wallet = await get_wallet(uid)
             ref_count = await count_referrals(uid)
-            ref_link = f"https://t.me/{context.bot.username}?start=ref_{uid}"
-            txt = f"👥 سیستم دعوت:\n\n🔗 لینک شما:\n{ref_link}\n\nسکه: {wallet['balance']}"
+            ref_link = f"https://t.me/{BOT_USERNAME}?start=ref_{uid}"
+
+            txt = (
+                "👥 سیستم دعوت دوستان:\n\n"
+                f"🔗 لینک دعوت اختصاصی:\n{ref_link}\n\n"
+                f"هر دعوت موفق = {INVITE_REWARD_COINS} سکه\n"
+                f"دعوت‌های موفق: {ref_count}\n"
+                f"موجودی فعلی: {wallet['balance']} سکه\n\n"
+                "دوستانت را دعوت کن و سکه بگیر."
+            )
             return await context.bot.send_message(uid, txt)
 
-    # ================= کیفیت و سایر بخش‌ها =================
+        # ⚙️ تنظیم کیفیت (فقط VIP)
+        if action == "quality":
+            if not await is_vip(uid):
+                return await context.bot.send_message(
+                    uid,
+                    "⚠️ تنظیم کیفیت فقط برای کاربران VIP فعال است."
+                )
+
+            current = await get_user_quality(uid)
+            kb = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("🎧 بهترین", callback_data="q_best"),
+                    InlineKeyboardButton("🎚 320kbps", callback_data="q_320"),
+                ],
+                [
+                    InlineKeyboardButton("🎚 192kbps", callback_data="q_192"),
+                    InlineKeyboardButton("🎚 128kbps", callback_data="q_128"),
+                ]
+            ])
+            return await context.bot.send_message(
+                uid,
+                f"🎚 کیفیت فعلی: {current}\nیکی از گزینه‌ها را انتخاب کن:",
+                reply_markup=kb
+            )
+
+        # 📂 تاریخچه
+        if action == "history":
+            rows = await get_history(uid, 10)
+            if not rows:
+                return await context.bot.send_message(uid, "📂 هنوز هیچ موزیکی پردازش نکردی.")
+            lines = []
+            for title, source, created_at in rows:
+                src = source if source != "forwarded" else "فایل آپلودی"
+                lines.append(f"• {title}\n  ↳ {src}")
+            return await context.bot.send_message(uid, "🕘 تاریخچه:\n\n" + "\n\n".join(lines))
+
+        # 📖 راهنما
+        if action == "help":
+            return await context.bot.send_message(uid, HELP_TEXT)
+
+        return
+
+    # ================= کیفیت =================
     if data.startswith("q_"):
         if not await is_vip(uid):
-            return await q.edit_message_text("⚠️ مخصوص کاربران VIP")
-        mapping = {"q_best": "best", "q_320": "320", "q_192": "192", "q_128": "128"}
-        if data in mapping:
-            await set_user_quality(uid, mapping[data])
-            return await q.edit_message_text(f"🎚 کیفیت روی {mapping[data]} تنظیم شد.")
+            return await q.edit_message_text("⚠️ تغییر کیفیت فقط برای VIP فعال است.")
 
-    # ... بقیه شرط‌های مربوط به ادمین و پلی‌لیست که در کد خودت بود ...
+        mapping = {
+            "q_best": "best",
+            "q_320": "320",
+            "q_192": "192",
+            "q_128": "128",
+        }
+        q_key = data
+        if q_key in mapping:
+            await set_user_quality(uid, mapping[q_key])
+            return await q.edit_message_text(f"🎚 کیفیت روی {mapping[q_key]} تنظیم شد.")
+        return
+
+    # ================= بررسی عضویت =================
+    if data == "check_join":
+        if await is_member(uid, context):
+            return await q.edit_message_text("✅ عضویت تایید شد. حالا لینک یا فایل بفرست.")
+        else:
+            return await q.edit_message_text("❌ هنوز عضو کانال نیستی.")
+
+    # ================= Wallet / VIP با سکه =================
+    if data.startswith("wallet:"):
+        action = data.split(":", 1)[1]
+
+        # خرید VIP با سکه
+        if action == "buy_vip":
+            wallet = await get_wallet(uid)
+            txt = (
+                "👑 خرید VIP با سکه:\n\n"
+                f"موجودی فعلی: {wallet['balance']} سکه\n\n"
+                f"ماهانه: {VIP_COIN_PRICES['monthly']} سکه\n"
+                f"سه‌ماهه: {VIP_COIN_PRICES['quarterly']} سکه\n"
+                f"سالانه: {VIP_COIN_PRICES['yearly']} سکه\n"
+            )
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("ماهانه", callback_data="wallet:buyvip_monthly")],
+                [InlineKeyboardButton("سه‌ماهه", callback_data="wallet:buyvip_quarterly")],
+                [InlineKeyboardButton("سالانه", callback_data="wallet:buyvip_yearly")],
+            ])
+            return await context.bot.send_message(uid, txt, reply_markup=kb)
+
+        # خرید VIP پلن‌ها
+        if action.startswith("buyvip_"):
+            plan_key = action.split("_", 1)[1]
+            price = VIP_COIN_PRICES[plan_key]
+            wallet = await get_wallet(uid)
+
+            if wallet["balance"] < price:
+                return await context.bot.send_message(
+                    uid,
+                    "❌ موجودی کافی نیست.\nدوستانت را دعوت کن تا سکه بگیری."
+                )
+
+            new_balance = await update_wallet_balance(uid, -price)
+            await add_wallet_tx(uid, None, price, "vip_purchase", {"plan": plan_key})
+
+            days_map = {"monthly": 30, "quarterly": 90, "yearly": 365}
+            await set_vip(uid, plan_key, days_map[plan_key])
+
+            return await context.bot.send_message(
+                uid,
+                f"👑 VIP فعال شد!\nپلن: {plan_key}\nموجودی جدید: {new_balance} سکه"
+            )
+
+        # انتقال سکه
+        if action == "transfer_start":
+            wallet_flows[uid] = {"mode": "transfer_address", "data": {}}
+            return await context.bot.send_message(uid, "آدرس کیف پول مقصد را ارسال کن.")
+
+        # درخواست نقد
+        if action == "withdraw_start":
+            wallet_flows[uid] = {"mode": "withdraw_amount", "data": {}}
+            return await context.bot.send_message(uid, "مقدار سکه برای برداشت را ارسال کن.")
+
+        return
+
+    # ================= ADMIN PANEL =================
+    if data.startswith("admin:"):
+        pass  # بدون تغییر
+
+    # ================= Playlist callbacks =================
+    # بدون تغییر
+
+
+    # ================= ADMIN PANEL =================
+    if data.startswith("admin:"):
+        if not await is_admin(uid):
+            return await q.edit_message_text("⛔️ شما به پنل مدیریت دسترسی ندارید.")
+        action = data.split(":", 1)[1]
+
+        # مدیریت VIP
+        if action == "vip":
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ فعال‌سازی/تمدید VIP", callback_data="admin:vip_add")],
+            ])
+            return await q.edit_message_text("👑 مدیریت VIP:", reply_markup=kb)
+
+        if action == "vip_add":
+            admin_flows[uid] = {"mode": "vip_add", "data": {}}
+            return await q.edit_message_text(
+                "👑 فعال‌سازی/تمدید VIP\n\n"
+                "آیدی عددی کاربر را ارسال کن (user_id)."
+            )
+
+        if action in ("vip_plan_monthly", "vip_plan_quarterly", "vip_plan_yearly"):
+            flow = admin_flows.get(uid)
+            if not flow or "data" not in flow or "target_id" not in flow["data"]:
+                return await q.edit_message_text("❌ اطلاعات کاربر پیدا نشد. دوباره از ابتدا تلاش کن.")
+            target_id = flow["data"]["target_id"]
+
+            if action == "vip_plan_monthly":
+                plan = "monthly"
+                days = 30
+            elif action == "vip_plan_quarterly":
+                plan = "quarterly"
+                days = 90
+            else:
+                plan = "yearly"
+                days = 365
+
+            await set_vip(target_id, plan, days)
+            await add_payment(target_id, plan, 0)
+            try:
+                await context.bot.send_message(
+                    target_id,
+                    "👑 اشتراک VIP شما فعال شد!\n\n"
+                    "از این لحظه:\n"
+                    "• دانلود نامحدود\n"
+                    "• دسترسی کامل به پلی‌لیست و ست\n"
+                    "• کیفیت بالا\n"
+                    "• ارسال مستقیم در چت خودتان\n\n"
+                    "از ربات لذت ببرید."
+                )
+            except Exception as e:
+                logging.warning(f"Could not send VIP welcome message to {target_id}: {e}")
+
+            admin_flows.pop(uid, None)
+            return await q.edit_message_text(f"✅ کاربر {target_id} با موفقیت VIP ({plan}) شد.")
+
+        # تنظیمات محدودیت
+        if action == "limits":
+            limits = await get_user_limits()
+            txt = (
+                "⚙️ تنظیمات کاربران معمولی:\n\n"
+                f"• حداکثر دانلود روزانه: {limits['max_daily_downloads']}\n"
+                f"• حداکثر ترک پلی‌لیست: {limits['max_playlist_tracks']} (0 یعنی ممنوع)\n"
+                f"• حداکثر کیفیت: {limits['max_quality']}kbps\n\n"
+                "برای تغییر هرکدام، از گزینه‌های زیر استفاده کن."
+            )
+            kb = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("⬆️ افزایش دانلود/روز", callback_data="admin:limits_inc"),
+                    InlineKeyboardButton("⬇️ کاهش دانلود/روز", callback_data="admin:limits_dec"),
+                ],
+                [
+                    InlineKeyboardButton("📀 اجازه پلی‌لیست (تغییر)", callback_data="admin:limits_toggle_pl"),
+                ]
+            ])
+            return await q.edit_message_text(txt, reply_markup=kb)
+
+        if action == "limits_inc":
+            limits = await get_user_limits()
+            new_val = limits["max_daily_downloads"] + 1
+            await update_user_limits({"max_daily_downloads": new_val})
+            try:
+                return await q.edit_message_text(f"✅ حداکثر دانلود روزانه روی {new_val} تنظیم شد.")
+            except BadRequest as e:
+                if "Message is not modified" in str(e):
+                    return
+                raise
+
+        if action == "limits_dec":
+            limits = await get_user_limits()
+            new_val = max(0, limits["max_daily_downloads"] - 1)
+            await update_user_limits({"max_daily_downloads": new_val})
+            try:
+                return await q.edit_message_text(f"✅ حداکثر دانلود روزانه روی {new_val} تنظیم شد.")
+            except BadRequest as e:
+                if "Message is not modified" in str(e):
+                    return
+                raise
+
+        if action == "limits_toggle_pl":
+            limits = await get_user_limits()
+            current = limits["max_playlist_tracks"]
+            new_val = 0 if current > 0 else 9999
+            await update_user_limits({"max_playlist_tracks": new_val})
+            state_txt = "❌ پلی‌لیست برای کاربران معمولی ممنوع شد." if new_val == 0 else "✅ پلی‌لیست برای کاربران معمولی فعال شد."
+            try:
+                return await q.edit_message_text(state_txt)
+            except BadRequest as e:
+                if "Message is not modified" in str(e):
+                    return
+                raise
+
+        # سیستم تبلیغات
+        if action == "ads":
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📢 به همه کاربران", callback_data="admin:ads_all")],
+                [InlineKeyboardButton("👑 فقط VIP", callback_data="admin:ads_vip")],
+                [InlineKeyboardButton("👤 فقط کاربران معمولی", callback_data="admin:ads_free")],
+            ])
+            return await q.edit_message_text("📢 سیستم تبلیغات:", reply_markup=kb)
+
+        if action in ("ads_all", "ads_vip", "ads_free"):
+            target = {
+                "ads_all": "all",
+                "ads_vip": "vip",
+                "ads_free": "free",
+            }[action]
+            admin_flows[uid] = {"mode": "ads_text", "data": {"target": target}}
+            return await q.edit_message_text(
+                "📢 متن پیام تبلیغاتی را ارسال کن.\n"
+                "فعلاً فقط متن پشتیبانی می‌شود."
+            )
+
+        # مدیریت ادمین‌ها
+        if action == "admins":
+            if not await is_owner(uid):
+                return await q.edit_message_text("⛔️ فقط مالک ربات می‌تواند ادمین‌ها را مدیریت کند.")
+            admins = await list_admins()
+            lines = []
+            for a in admins:
+                role = a.get("role", "admin")
+                lines.append(f"{a['user_id']} — {role}")
+            txt = "🛠 مدیریت ادمین‌ها:\n\n" + ("\n".join(lines) if lines else "هنوز ادمینی ثبت نشده.")
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ اضافه کردن ادمین", callback_data="admin:admins_add")],
+                [InlineKeyboardButton("➖ حذف ادمین", callback_data="admin:admins_remove")],
+            ])
+            return await q.edit_message_text(txt, reply_markup=kb)
+
+        if action == "admins_add":
+            if not await is_owner(uid):
+                return await q.edit_message_text("⛔️ فقط مالک ربات می‌تواند ادمین اضافه کند.")
+            admin_flows[uid] = {"mode": "admin_add", "data": {}}
+            return await q.edit_message_text("آیدی عددی کسی که می‌خوای ادمین کنی رو بفرست.")
+
+        if action == "admins_remove":
+            if not await is_owner(uid):
+                return await q.edit_message_text("⛔️ فقط مالک ربات می‌تواند ادمین حذف کند.")
+            admin_flows[uid] = {"mode": "admin_remove", "data": {}}
+            return await q.edit_message_text(
+                "آیدی عددی ادمینی که می‌خوای حذف کنی رو بفرست.\n"
+                "Owner (خودت) قابل حذف نیست."
+            )
+
+        # مدیریت کیف پول / سکه
+        if action == "wallet":
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ اعطای سکه به کاربر", callback_data="admin:wallet_grant")],
+            ])
+            return await q.edit_message_text("💰 مدیریت کیف پول و سکه:", reply_markup=kb)
+
+        if action == "wallet_grant":
+            admin_flows[uid] = {"mode": "wallet_grant_user", "data": {}}
+            return await q.edit_message_text(
+                "اعطای سکه به کاربر:\n\n"
+                "آیدی عددی کاربر را ارسال کن."
+            )
+
+        # آمار
+        if action == "stats":
+            stats = await get_basic_stats()
+            txt = (
+                "📊 آمار کلی:\n\n"
+                f"• تعداد کل کاربران: {stats['users_count']}\n"
+                f"• تعداد کاربران VIP: {stats['vip_count']}\n"
+                f"• دانلودهای امروز: {stats['downloads_today']}\n"
+            )
+            return await q.edit_message_text(txt)
+
+        return
+
+    # ================= PLAYLIST CALLBACKS =================
+    if data.startswith("pl_all:"):
+        job_id = data.split(":", 1)[1]
+        pl = pending_playlists.get(uid)
+        if not pl or pl["job_id"] != job_id:
+            return await q.edit_message_text("❌ اطلاعات پلی‌لیست پیدا نشد.")
+
+        if not await is_vip(uid):
+            limits = await get_user_limits()
+            if limits["max_playlist_tracks"] == 0:
+                return await q.edit_message_text(
+                    "⛔️ دانلود پلی‌لیست فقط برای کاربران VIP فعال است.\n"
+                    "برای فعال‌سازی VIP با ادمین تماس بگیر."
+                )
+
+        total = len(pl["tracks"])
+        indices = list(range(total))
+        pending_playlists[uid]["await_selection"] = False
+        await q.edit_message_text(
+            f"✅ {total} ترک انتخاب شد.\n"
+            "در حال شروع دانلود و پردازش هستم…"
+        )
+        msg = await context.bot.send_message(
+            chat_id=pl["chat_id"],
+            text="🔄 در حال آماده‌سازی دانلود پلی‌لیست…"
+        )
+        pending_playlists[uid]["status_msg_id"] = msg.message_id
+        pending_playlists[uid]["chat_id"] = msg.chat_id
+
+        async def task():
+            await process_playlist(uid, context, pending_playlists[uid], indices)
+
+        await queue.put(task)
+        return
+
+    if data.startswith("pl_select:"):
+        job_id = data.split(":", 1)[1]
+        pl = pending_playlists.get(uid)
+        if not pl or pl["job_id"] != job_id:
+            return await q.edit_message_text("❌ اطلاعات پلی‌لیست پیدا نشد.")
+
+        if not await is_vip(uid):
+            limits = await get_user_limits()
+            if limits["max_playlist_tracks"] == 0:
+                return await q.edit_message_text(
+                    "⛔️ انتخاب دستی و دانلود پلی‌لیست فقط برای کاربران VIP فعال است."
+                )
+
+        total = len(pl["tracks"])
+        lines = []
+        max_preview = min(total, 50)
+        for i in range(max_preview):
+            lines.append(f"{i+1}. {pl['tracks'][i]['title']}")
+        if total > max_preview:
+            lines.append(f"... و {total - max_preview} ترک دیگر")
+
+        txt = (
+            "🎯 انتخاب دستی ترک‌ها\n\n"
+            "شماره ترک‌ها را به‌صورت زیر بفرست:\n"
+            "مثال: 1,3,5-10\n\n"
+            f"حداکثر: {total}\n\n"
+            "لیست ترک‌ها:\n" + "\n".join(lines)
+        )
+        pending_playlists[uid]["await_selection"] = True
+        return await q.edit_message_text(txt)
+
+    if data.startswith("resume:"):
+        job_id = data.split(":", 1)[1]
+        pending = await get_pending_indices_for_job(job_id)
+        if not pending:
+            await finish_job(job_id)
+            return await q.edit_message_text("✅ همهٔ ترک‌ها قبلاً ارسال شده‌اند.")
+
+        await q.edit_message_text("▶️ ادامهٔ پردازش پلی‌لیست…")
+
+        async def task():
+            await process_playlist_job_resume(uid, context, job_id, pending)
+
+        await queue.put(task)
+        return
+
+    if data.startswith("restart:"):
+        job_id = data.split(":", 1)[1]
+        await reset_job(job_id)
+        return await q.edit_message_text("🔄 پردازش از اول شروع می‌شود. دوباره لینک را بفرست.")
 
 # =========================================================
 # ======================= TEXT HANDLER =====================
@@ -1632,13 +1970,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = await resolve_soundcloud_url(raw_url)
     user_quality = await get_user_quality(uid)
     isvip = await is_vip(uid)
-    user_quality = await get_user_quality(uid)
-    isvip = await is_vip(uid)
-    
-    # --- اضافه کردن این خط برای دریافت تنظیمات شخصی ---
-    # فرض بر این است که تابعی داری که تنظیمات کاربر را برمی‌گرداند
-    user_settings = await get_user_settings(uid) 
-    should_post_to_channel = user_settings.get("post_to_channel", True) # پیش‌فرض بله
+
     info_msg = await update.message.reply_text("🔍 در حال تحلیل لینک SoundCloud…")
 
     existing = await get_incomplete_job(uid, url)
@@ -1728,40 +2060,26 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption = f"{prefix}🎵 {title}\n🔗 @{CHANNEL_USERNAME}"
 
         await info_msg.edit_text("📡 در حال ارسال…")
-        # --- منطق هوشمند مقصد ارسال ---
-        destinations = []
-        if isvip:
-            destinations.append(uid) # برای VIP همیشه شخصی ارسال شود
-            if should_post_to_channel:
-                destinations.append(CHANNEL_ID) # اگر خودش فعال کرده بود، به کانال هم برود
+
+        for chat in target_chats:
+    with open(final_path, "rb") as f:
+        if size <= MAX_FILE_SIZE:
+            await context.bot.send_audio(chat, f, filename=title + ".mp3", caption=caption)
         else:
-            destinations.append(CHANNEL_ID) # برای کاربر عادی فقط به کانال برود
+            await context.bot.send_document(chat, f, filename=title + ".mp3", caption=caption)
+
 
         try:
-            # این همان حلقه ای است که اجازه می دهد آهنگ به چند جا ارسال شود
-            for chat_id in destinations:
-                with open(final_path, "rb") as f:
-                    if size <= MAX_FILE_SIZE:
-                        await context.bot.send_audio(
-                            chat_id=chat_id, 
-                            audio=f, 
-                            filename=title + ".mp3", 
-                            caption=caption
-                        )
-                    else:
-                        await context.bot.send_document(
-                            chat_id=chat_id, 
-                            document=f, 
-                            filename=title + ".mp3", 
-                            caption=caption
-                        )
+            with open(final_path, "rb") as f:
+                if size <= MAX_FILE_SIZE:
+                    await context.bot.send_audio(target_chat, f, filename=title + ".mp3", caption=caption)
+                else:
+                    await context.bot.send_document(target_chat, f, filename=title + ".mp3", caption=caption)
 
-            # ثبت آمار و پیام موفقیت باید بیرون از حلقه (بعد از تمام شدن ارسال‌ها) باشد
             await add_history(uid, title, "SoundCloud")
             await increment_user_daily_usage(uid, date.today())
             await log_analytics(uid, "download", {"type": "single"})
             await info_msg.edit_text("✅ ترک با موفقیت دانلود و ارسال شد.")
-            
         except Exception as e:
             logging.error(f"[Single] Send error: {e}")
             await info_msg.edit_text("❌ خطایی در ارسال فایل رخ داد.")
@@ -1771,6 +2089,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     os.remove(final_path)
                 except Exception:
                     pass
+
         return
 
     # پلی‌لیست
@@ -2107,31 +2426,13 @@ async def broadcast_message(context: ContextTypes.DEFAULT_TYPE, text: str, targe
 # =========================================================
 
 async def post_init(app: Application):
-    """این تابع هنگام شروع به کار ربات اجرا می‌شود"""
     await start_workers(app)
     await ensure_owner_admin()
-    
-    # تنظیم دکمه‌های منوی ربات در تلگرام
-    await app.bot.set_my_commands([
-        ("start", "🚀 شروع مجدد"),
-        ("quality", "🎧 تنظیم کیفیت"),
-        ("wallet", "💰 کیف پول"),
-        ("vip", "👑 اشتراک ویژه"),
-        ("history", "📜 تاریخچه"),
-    ])
-    
-    # شروع عملیات خود-پینگ برای بیدار نگه داشتن سرور رندر
-    if 'keep_alive' in globals():
-        asyncio.create_task(keep_alive())
-    
-    logging.info("✅ Post-init complete: Workers started and keep_alive task initiated.")
+    logging.info("Post-init done (workers + owner admin).")
 
 def main():
-    """نقطه شروع اصلی برنامه"""
-    # ساخت اپلیکیشن ربات
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # ثبت دستورات (Handlers)
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("history", history_cmd))
@@ -2140,16 +2441,12 @@ def main():
     app.add_handler(CommandHandler("admin", admin_cmd))
     app.add_handler(CommandHandler("wallet", wallet_cmd))
 
-    # ثبت هندلرهای پیام و دکمه‌ها
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.AUDIO | filters.Document.AUDIO, handle_audio))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    # معرفی تابع شروع‌کننده به اپلیکیشن
     app.post_init = post_init
 
-    # اجرای ربات روی وب‌هوک (مخصوص Render)
-    logging.info("📡 Bot is starting on Webhook...")
     app.run_webhook(
         listen="0.0.0.0",
         port=int(os.getenv("PORT", 10000)),
