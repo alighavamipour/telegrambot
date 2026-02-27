@@ -1065,11 +1065,16 @@ async def vip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.from_user:
         return
     uid = update.message.from_user.id
+    
     info = await get_vip_info(uid)
     wallet = await get_wallet(uid)
     ref_count = await count_referrals(uid)
-    [InlineKeyboardButton("📤 ارسال در کانال (VIP)", callback_data="vip:post_mode")]
-    if await is_vip(uid):
+    is_user_vip = await is_vip(uid)
+
+    # ساخت لیست دکمه‌ها (Keyboard)
+    keyboard_buttons = []
+
+    if is_user_vip:
         exp = info["expires_at"]
         txt = (
             "👑 وضعیت VIP شما:\n\n"
@@ -1079,32 +1084,38 @@ async def vip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• دانلود نامحدود\n"
             "• پلی‌لیست و ست کامل\n"
             "• کیفیت بهترین\n"
-            "• ارسال مستقیم در چت شما\n\n"
+            "• ارسال شخصی و کانال\n\n"
             f"💰 موجودی سکه: {wallet['balance']}\n"
             f"👥 تعداد دعوت‌های موفق: {ref_count}\n"
         )
+        
+        # دریافت وضعیت فعلی از دیتابیس برای نمایش روی دکمه
+        user_settings = await db.select("users", {"user_id": uid})
+        is_on = user_settings[0].get("post_to_channel", 1) == 1 if user_settings else True
+        status_emoji = "✅ روشن" if is_on else "❌ خاموش"
+        
+        # اضافه کردن دکمه تنظیمات کانال مخصوص VIPها
+        keyboard_buttons.append([InlineKeyboardButton(f"ارسال در کانال: {status_emoji}", callback_data="toggle_post_setting")])
+        
     else:
         limits = await get_user_limits()
         txt = (
             "❌ شما VIP نیستید.\n\n"
             "کاربران معمولی:\n"
             f"• حداکثر {limits['max_daily_downloads']} دانلود در روز\n"
-            f"• بدون دسترسی به پلی‌لیست (در صورت تنظیم)\n"
+            f"• بدون دسترسی به پلی‌لیست\n"
             f"• کیفیت تا {limits['max_quality']}kbps\n\n"
-            "👑 VIP:\n"
-            "• دانلود نامحدود\n"
-            "• پلی‌لیست و ست کامل\n"
-            "• کیفیت بهترین\n"
-            "• ارسال مستقیم در چت شما\n\n"
             f"💰 موجودی سکه: {wallet['balance']}\n"
             f"👥 دعوت‌های موفق: {ref_count}\n"
-            "می‌توانی با سکه هم VIP بخری."
         )
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("👑 خرید VIP با سکه", callback_data="wallet:buy_vip")],
-        [InlineKeyboardButton("💰 کیف پول", callback_data="menu:wallet")],
-        [InlineKeyboardButton("👥 دعوت دوستان", callback_data="menu:referral")],
-    ])
+        # دکمه خرید VIP برای کاربران معمولی
+        keyboard_buttons.append([InlineKeyboardButton("👑 خرید VIP با سکه", callback_data="wallet:buy_vip")])
+
+    # دکمه‌های مشترک برای همه
+    keyboard_buttons.append([InlineKeyboardButton("💰 کیف پول", callback_data="menu:wallet")])
+    keyboard_buttons.append([InlineKeyboardButton("👥 دعوت دوستان", callback_data="menu:referral")])
+
+    kb = InlineKeyboardMarkup(keyboard_buttons)
     await update.message.reply_text(txt, reply_markup=kb)
 
 async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
