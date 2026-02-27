@@ -425,7 +425,17 @@ async def finish_job(job_id):
 async def reset_job(job_id):
     await db.delete("job_tracks", {"job_id": job_id})
     await db.delete("jobs", {"job_id": job_id})
-
+# --- check post to channel
+async def toggle_vip_post_setting(uid: int):
+    # فرض بر این است که جدولی به نام users داری که فیلد post_to_channel دارد
+    # اگر این فیلد را نداری، باید در دیتابیس اضافه کنی
+    current = await db.select("users", {"user_id": uid})
+    if current:
+        new_val = 0 if current[0].get("post_to_channel", 1) == 1 else 1
+        await db.update("users", {"post_to_channel": new_val}, {"user_id": uid})
+        return new_val
+    return 1 # پیش‌فرض ارسال به کانال
+# -- check post to channel
 # ---------- ADMINS ----------
 async def ensure_owner_admin():
     if not OWNER_ID:
@@ -1391,7 +1401,24 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await set_user_quality(uid, mapping[q_key])
             return await q.edit_message_text(f"🎚 کیفیت روی {mapping[q_key]} تنظیم شد.")
         return
-
+    # ---- check post to channel vip
+    # در بخشی که دکمه‌های VIP رو می‌سازی
+    async def get_vip_keyboard(uid):
+    user_data = await db.select("users", {"user_id": uid})
+    status = "✅ روشن" if user_data[0].get("post_to_channel", 1) == 1 else "❌ خاموش"
+    
+    kb = [
+        [InlineKeyboardButton(f"ارسال به کانال: {status}", callback_data="toggle_post_setting")],
+        [InlineKeyboardButton("خرید اشتراک / تمدید", callback_data="buy_vip")],
+    ]
+    return InlineKeyboardMarkup(kb)
+        if query.data == "toggle_post_setting":
+        new_status = await toggle_vip_post_setting(uid)
+        txt = "✅ تنظیمات تغییر کرد. آهنگ‌های شما از این پس در کانال هم منتشر می‌شوند." if new_status == 1 else "❌ تنظیمات تغییر کرد. آهنگ‌های شما فقط به صورت شخصی ارسال می‌شوند."
+        await query.answer(txt, show_alert=True)
+        # آپدیت کردن دکمه‌ها
+        await query.edit_message_reply_markup(reply_markup=await get_vip_keyboard(uid))
+    # ---- check post to channel  vip
     # ================= بررسی عضویت =================
     if data == "check_join":
         if await is_member(uid, context):
@@ -1978,7 +2005,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = await resolve_soundcloud_url(raw_url)
     user_quality = await get_user_quality(uid)
     isvip = await is_vip(uid)
-
+    user_quality = await get_user_quality(uid)
+    isvip = await is_vip(uid)
+    
+    # --- اضافه کردن این خط برای دریافت تنظیمات شخصی ---
+    # فرض بر این است که تابعی داری که تنظیمات کاربر را برمی‌گرداند
+    user_settings = await get_user_settings(uid) 
+    should_post_to_channel = user_settings.get("post_to_channel", True) # پیش‌فرض بله
     info_msg = await update.message.reply_text("🔍 در حال تحلیل لینک SoundCloud…")
 
     existing = await get_incomplete_job(uid, url)
@@ -2068,19 +2101,40 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption = f"{prefix}🎵 {title}\n🔗 @{CHANNEL_USERNAME}"
 
         await info_msg.edit_text("📡 در حال ارسال…")
-        target_chat = uid if isvip else CHANNEL_ID
+        # --- منطق هوشمند مقصد ارسال ---
+        destinations = []
+        if isvip:
+            destinations.append(uid) # برای VIP همیشه شخصی ارسال شود
+            if should_post_to_channel:
+                destinations.append(CHANNEL_ID) # اگر خودش فعال کرده بود، به کانال هم برود
+        else:
+            destinations.append(CHANNEL_ID) # برای کاربر عادی فقط به کانال برود
 
         try:
-            with open(final_path, "rb") as f:
-                if size <= MAX_FILE_SIZE:
-                    await context.bot.send_audio(target_chat, f, filename=title + ".mp3", caption=caption)
-                else:
-                    await context.bot.send_document(target_chat, f, filename=title + ".mp3", caption=caption)
+            # این همان حلقه ای است که اجازه می دهد آهنگ به چند جا ارسال شود
+            for chat_id in destinations:
+                with open(final_path, "rb") as f:
+                    if size <= MAX_FILE_SIZE:
+                        await context.bot.send_audio(
+                            chat_id=chat_id, 
+                            audio=f, 
+                            filename=title + ".mp3", 
+                            caption=caption
+                        )
+                    else:
+                        await context.bot.send_document(
+                            chat_id=chat_id, 
+                            document=f, 
+                            filename=title + ".mp3", 
+                            caption=caption
+                        )
 
+            # ثبت آمار و پیام موفقیت باید بیرون از حلقه (بعد از تمام شدن ارسال‌ها) باشد
             await add_history(uid, title, "SoundCloud")
             await increment_user_daily_usage(uid, date.today())
             await log_analytics(uid, "download", {"type": "single"})
             await info_msg.edit_text("✅ ترک با موفقیت دانلود و ارسال شد.")
+            
         except Exception as e:
             logging.error(f"[Single] Send error: {e}")
             await info_msg.edit_text("❌ خطایی در ارسال فایل رخ داد.")
