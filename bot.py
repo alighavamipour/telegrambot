@@ -1195,35 +1195,34 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await msg.edit_text("📡 در حال ارسال…")
 
+            # تعیین مقصد ارسال بر اساس VIP و تنظیم post_to_channel
             if isvip:
-    isvip = await is_vip(uid)
+                vip_settings = await get_vip_settings(uid)
+                if vip_settings.get("post_to_channel"):
+                    target_chats = [uid, CHANNEL_ID]
+                else:
+                    target_chats = [uid]
+            else:
+                # کاربران معمولی: فقط کانال
+                target_chats = [CHANNEL_ID]
 
-if isvip:
-    vip_settings = await get_vip_settings(uid)
-    if vip_settings["post_to_channel"]:
-        target_chats = [uid, CHANNEL_ID]
-    else:
-        target_chats = [uid]
-else:
-    target_chats = [CHANNEL_ID]
-
-for chat in target_chats:
-    with open(final_path, "rb") as f:
-        if size <= MAX_FILE_SIZE:
-            await context.bot.send_audio(
-                chat,
-                f,
-                filename=title + ".mp3",
-                caption=caption
-            )
-        else:
-            await context.bot.send_document(
-                chat,
-                f,
-                filename=title + ".mp3",
-                caption=caption
-            )
-
+            # ارسال فایل به مقصدها
+            for chat in target_chats:
+                with open(final, "rb") as f:
+                    if size <= MAX_FILE_SIZE:
+                        await context.bot.send_audio(
+                            chat_id=chat,
+                            audio=f,
+                            filename=name + ".mp3",
+                            caption=caption,
+                        )
+                    else:
+                        await context.bot.send_document(
+                            chat_id=chat,
+                            document=f,
+                            filename=name + ".mp3",
+                            caption=caption,
+                        )
 
             await add_history(uid, name, "forwarded")
             await increment_user_daily_usage(uid, date.today())
@@ -1252,6 +1251,31 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = q.data
     uid = q.from_user.id
 
+    # ================= تنظیمات ارسال VIP =================
+    if data == "vip:post_mode":
+        settings = await get_vip_settings(uid)
+        current = settings["post_to_channel"]
+
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("فقط برای من", callback_data="vip:post_off")],
+            [InlineKeyboardButton("من + کانال", callback_data="vip:post_on")],
+        ])
+
+        return await context.bot.send_message(
+            uid,
+            f"📤 تنظیم ارسال VIP:\n\n"
+            f"وضعیت فعلی: {'ارسال در کانال فعال است' if current else 'فقط برای خودت ارسال می‌شود'}",
+            reply_markup=kb
+        )
+
+    if data == "vip:post_on":
+        await set_vip_post_mode(uid, True)
+        return await context.bot.send_message(uid, "📤 ارسال در کانال فعال شد.")
+
+    if data == "vip:post_off":
+        await set_vip_post_mode(uid, False)
+        return await context.bot.send_message(uid, "📥 فقط برای خودت ارسال می‌شود.")
+
     # ================= منوی اصلی =================
     if data.startswith("menu:"):
         action = data.split(":", 1)[1]
@@ -1268,31 +1292,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await vip_cmd(
                 Update(update.update_id, message=q.message),
                 context
-                if data == "vip:post_mode":
-    settings = await get_vip_settings(uid)
-    current = settings["post_to_channel"]
-
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("فقط برای من", callback_data="vip:post_off")],
-        [InlineKeyboardButton("من + کانال", callback_data="vip:post_on")],
-    ])
-
-    return await context.bot.send_message(
-        uid,
-        f"📤 تنظیم ارسال VIP:\n\n"
-        f"وضعیت فعلی: {'ارسال در کانال فعال است' if current else 'فقط برای خودت ارسال می‌شود'}",
-        reply_markup=kb
-    )
-
-
-if data == "vip:post_on":
-    await set_vip_post_mode(uid, True)
-    return await context.bot.send_message(uid, "📤 ارسال در کانال فعال شد.")
-
-if data == "vip:post_off":
-    await set_vip_post_mode(uid, False)
-    return await context.bot.send_message(uid, "📥 فقط برای خودت ارسال می‌شود.")
-
             )
 
         # 💰 کیف پول
@@ -1439,14 +1438,6 @@ if data == "vip:post_off":
             return await context.bot.send_message(uid, "مقدار سکه برای برداشت را ارسال کن.")
 
         return
-
-    # ================= ADMIN PANEL =================
-    if data.startswith("admin:"):
-        pass  # بدون تغییر
-
-    # ================= Playlist callbacks =================
-    # بدون تغییر
-
 
     # ================= ADMIN PANEL =================
     if data.startswith("admin:"):
@@ -1723,6 +1714,7 @@ if data == "vip:post_off":
         job_id = data.split(":", 1)[1]
         await reset_job(job_id)
         return await q.edit_message_text("🔄 پردازش از اول شروع می‌شود. دوباره لینک را بفرست.")
+
 
 # =========================================================
 # ======================= TEXT HANDLER =====================
@@ -2060,14 +2052,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption = f"{prefix}🎵 {title}\n🔗 @{CHANNEL_USERNAME}"
 
         await info_msg.edit_text("📡 در حال ارسال…")
-
-        for chat in target_chats:
-    with open(final_path, "rb") as f:
-        if size <= MAX_FILE_SIZE:
-            await context.bot.send_audio(chat, f, filename=title + ".mp3", caption=caption)
-        else:
-            await context.bot.send_document(chat, f, filename=title + ".mp3", caption=caption)
-
+        target_chat = uid if isvip else CHANNEL_ID
 
         try:
             with open(final_path, "rb") as f:
@@ -2089,7 +2074,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     os.remove(final_path)
                 except Exception:
                     pass
-
         return
 
     # پلی‌لیست
