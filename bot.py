@@ -414,7 +414,32 @@ async def mark_track_sent(job_id, index):
         {"job_id": job_id},
         {"updated_at": datetime.utcnow().isoformat()},
     )
+async def get_vip_keyboard(uid):
+    """ساخت کیبورد وی‌آی‌پی با خواندن وضعیت لحظه‌ای از دیتابیس"""
+    try:
+        user_data = await db.select("users", {"user_id": uid})
+        is_on = 1
+        if user_data and "post_to_channel" in user_data[0]:
+            val = user_data[0]["post_to_channel"]
+            is_on = val if val is not None else 1
+    except:
+        is_on = 1
 
+    status_emoji = "✅ روشن" if is_on == 1 else "❌ خاموش"
+    
+    is_user_vip = await is_vip(uid)
+    buttons = []
+    
+    if is_user_vip:
+        buttons.append([InlineKeyboardButton(f"ارسال در کانال: {status_emoji}", callback_data="toggle_post_setting")])
+    else:
+        buttons.append([InlineKeyboardButton("👑 خرید VIP با سکه", callback_data="wallet:buy_vip")])
+        
+    buttons.append([InlineKeyboardButton("💰 کیف پول", callback_data="menu:wallet")])
+    buttons.append([InlineKeyboardButton("👥 دعوت دوستان", callback_data="menu:referral")])
+    
+    return InlineKeyboardMarkup(buttons)
+    
 async def finish_job(job_id):
     await db.update(
         "jobs",
