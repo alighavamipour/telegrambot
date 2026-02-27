@@ -1196,21 +1196,34 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("📡 در حال ارسال…")
 
             if isvip:
+    isvip = await is_vip(uid)
+
+if isvip:
     vip_settings = await get_vip_settings(uid)
-        if vip_settings["post_to_channel"]:
-        # ارسال هم به کاربر هم به کانال
+    if vip_settings["post_to_channel"]:
         target_chats = [uid, CHANNEL_ID]
     else:
         target_chats = [uid]
 else:
     target_chats = [CHANNEL_ID]
 
+for chat in target_chats:
+    with open(final_path, "rb") as f:
+        if size <= MAX_FILE_SIZE:
+            await context.bot.send_audio(
+                chat,
+                f,
+                filename=title + ".mp3",
+                caption=caption
+            )
+        else:
+            await context.bot.send_document(
+                chat,
+                f,
+                filename=title + ".mp3",
+                caption=caption
+            )
 
-            with open(final, "rb") as f:
-                if size <= MAX_FILE_SIZE:
-                    await context.bot.send_audio(target_chat, f, filename=name + ".mp3", caption=caption)
-                else:
-                    await context.bot.send_document(target_chat, f, filename=name + ".mp3", caption=caption)
 
             await add_history(uid, name, "forwarded")
             await increment_user_daily_usage(uid, date.today())
