@@ -1424,10 +1424,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data = await db.select("users", {"user_id": uid})
     
         # بررسی وضعیت (اگر کاربر وجود نداشت یا فیلد خالی بود، پیش‌فرض ۱ یا روشن در نظر می‌گیریم)
-            if user_data and "post_to_channel" in user_data[0]:
-                is_on = user_data[0]["post_to_channel"] == 1
-            else:
-                is_on = True
+        if user_data and "post_to_channel" in user_data[0]:
+            is_on = user_data[0]["post_to_channel"] == 1
+        else:
+            is_on = True
         
         status = "✅ روشن" if is_on else "❌ خاموش"
     
