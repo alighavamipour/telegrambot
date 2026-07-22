@@ -19,7 +19,7 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 static_ffmpeg.add_paths()
 
 # ----------------- تنظیمات -----------------
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # توکن رباتت رو اینجا بذار
+BOT_TOKEN = "8527003524:AAFBSHWc3eJ_D6xJEe4IKM9CKCqK_S7bMAc"  # توکن رباتت رو اینجا بذار
 CHANNEL_ID = "@voxxboxx"            # آیدی کانال
 COVER_PATH = "cover.jpg"            # عکس کاور اختصاصی
 
