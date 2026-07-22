@@ -1,4 +1,7 @@
-python-telegram-bot[webhooks]==20.7
+python-telegram-bot==21.10
 yt-dlp
-httpx
-aiohttp
+mutagen
+Pillow
+python-dotenv
+aiofiles
+ffmpeg-python
