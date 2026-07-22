@@ -57,7 +57,7 @@ def make_progress_bar(percent: float, length: int = 10) -> str:
     bar = '▓' * filled + '░' * (length - filled)
     return f"[{bar}] {percent:.1f}%"
 
-# ----------------- پاکسازی کامل و ویرایش متادیتا -----------------
+# ----------------- پاکسازی کامل و ویرایش متادیتا (اصلاح شده) -----------------
 def edit_metadata(file_path: str, title: str):
     ext = os.path.splitext(file_path)[1].lower()
     cover_absolute_path = os.path.abspath(COVER_PATH)
@@ -74,20 +74,17 @@ def edit_metadata(file_path: str, title: str):
         logger.debug(f"📸 Cover file loaded successfully ({len(cover_data)} bytes).")
 
         if ext == '.mp3':
+            # مدیریت ایمن تگ‌های ID3 جهت جلوگیری از خطای "an ID3 tag already exists"
             try:
-                audio = MP3(file_path, ID3=ID3)
+                tags = ID3(file_path)
+                tags.delete(file_path)  # پاکسازی تگ‌های قدیمی
+                tags = ID3()            # ساخت کانتینر جدید
             except ID3NoHeaderError:
-                logger.debug("No ID3 header found, creating new one...")
-                audio = MP3(file_path)
-                audio.add_tags()
-
-            # حذف تمام تگ‌های قبلی
-            if audio.tags:
-                audio.tags.delete(file_path)
-            audio.add_tags()
+                logger.debug("No ID3 header found, creating a new ID3 container.")
+                tags = ID3()
 
             # افزودن کاور و تگ‌های اختصاصی
-            audio.tags.add(
+            tags.add(
                 APIC(
                     encoding=3,      # UTF-8
                     mime='image/jpeg',
@@ -96,13 +93,13 @@ def edit_metadata(file_path: str, title: str):
                     data=cover_data
                 )
             )
-            audio.tags.add(TIT2(encoding=3, text=f"{title} {CHANNEL_ID}"))
-            audio.tags.add(TPE1(encoding=3, text=CHANNEL_ID))
-            audio.tags.add(TALB(encoding=3, text=CHANNEL_ID))
-            audio.tags.add(COMM(encoding=3, lang='eng', desc='Comment', text=CHANNEL_ID))
+            tags.add(TIT2(encoding=3, text=f"{title} {CHANNEL_ID}"))
+            tags.add(TPE1(encoding=3, text=CHANNEL_ID))
+            tags.add(TALB(encoding=3, text=CHANNEL_ID))
+            tags.add(COMM(encoding=3, lang='eng', desc='Comment', text=CHANNEL_ID))
             
-            # ذخیره با استاندارد ID3v2.3 جهت نمایش درست در تلگرام و تمام پلیرها
-            audio.save(v2_version=3)
+            # ذخیره تگ‌ها روی فایل با استاندارد ID3v2.3
+            tags.save(file_path, v2_version=3)
             logger.info(f"✅ ID3v2.3 tags and cover successfully saved to: {file_path}")
 
         elif ext == '.flac':
@@ -155,7 +152,7 @@ async def queue_worker(app: Application):
         finally:
             task_queue.task_done()
 
-# ----------------- پردازش فایل صوتی تلگرام (پشتیبانی از فوروارد) -----------------
+# ----------------- پردازش فایل صوتی تلگرام -----------------
 async def process_audio_file(app, chat_id, status_msg_id, doc_obj):
     file_name = getattr(doc_obj, 'file_name', None) or "music.mp3"
     logger.info(f"📥 Processing Telegram media/forwarded file: {file_name}")
