@@ -19,13 +19,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# دانلود و راه اندازی FFmpeg
+# راه اندازی FFmpeg
 static_ffmpeg.add_paths()
 
-# ----------------- تنظیمات ربات -----------------
-BOT_TOKEN = "8527003524:AAFBSHWc3eJ_D6xJEe4IKM9CKCqK_S7bMAc"  # توکن ربات خود را اینجا بگذارید
+# ----------------- دریافت توکن از Environment Variables -----------------
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL_ID = "@voxxboxx"            # آیدی کانال شما
-COVER_PATH = "cover.jpg"            # تصویر کاور در کنار فایل bot.py
+COVER_PATH = "cover.jpg"            # تصویر کاور
+
+if not BOT_TOKEN:
+    logger.critical("❌ BOT_TOKEN در متغیرهای محیطی (Environment Variables) تعریف نشده است!")
 
 task_queue = asyncio.Queue()
 
@@ -50,10 +53,10 @@ def make_progress_bar(percent: float, length: int = 10) -> str:
     bar = '▓' * filled + '░' * (length - filled)
     return f"[{bar}] {percent:.1f}%"
 
-# ----------------- پاکسازی و ویرایش متادیتا -----------------
+# ----------------- پاکسازی کامل و ویرایش متادیتا -----------------
 def edit_metadata(file_path: str, title: str):
     ext = os.path.splitext(file_path)[1].lower()
-    logger.info(f"🎨 Starting metadata & cover edit for: {file_path}")
+    logger.info(f"🎨 Starting metadata rewrite for: {file_path}")
     
     if not os.path.exists(COVER_PATH):
         logger.error(f"❌ Cover file not found at {COVER_PATH}!")
@@ -64,18 +67,17 @@ def edit_metadata(file_path: str, title: str):
 
     try:
         if ext == '.mp3':
-            # لود یا ساخت تگ ID3
             try:
                 audio = MP3(file_path, ID3=ID3)
             except ID3NoHeaderError:
                 audio = MP3(file_path)
                 audio.add_tags()
             
-            # پاک کردن تمام تگ‌های قبلی برای حذف آیدی کانال‌های دیگر
+            # حذف تمام تگ‌های قبلی کانال‌های دیگر
             audio.tags.delete(file_path)
             audio.add_tags()
 
-            # تزریق متادیتای جدید
+            # جایگذاری تگ‌های اختصاصی کانال شما
             audio.tags.add(APIC(encoding=3, mime='image/jpeg', type=3, desc='Cover', data=cover_data))
             audio.tags.add(TIT2(encoding=3, text=f"{title} {CHANNEL_ID}"))
             audio.tags.add(TPE1(encoding=3, text=CHANNEL_ID))
@@ -85,8 +87,7 @@ def edit_metadata(file_path: str, title: str):
 
         elif ext == '.flac':
             audio = FLAC(file_path)
-            audio.clear()  # حذف تمام تگ‌ها
-            
+            audio.clear()  # حذف کامل تگ‌های قبلی
             image = Picture()
             image.type = 3
             image.mime = 'image/jpeg'
@@ -100,7 +101,7 @@ def edit_metadata(file_path: str, title: str):
 
         elif ext in ['.m4a', '.mp4']:
             audio = MP4(file_path)
-            audio.delete()  # پاک کردن تگ‌های قبلی
+            audio.delete()  # حذف کامل تگ‌های قبلی
             audio['covr'] = [MP4Cover(cover_data, imageformat=MP4Cover.FORMAT_JPEG)]
             audio['\xa9nam'] = f"{title} {CHANNEL_ID}"
             audio['\xa9ART'] = CHANNEL_ID
@@ -108,15 +109,15 @@ def edit_metadata(file_path: str, title: str):
             audio['\xa9cmt'] = CHANNEL_ID
             audio.save()
 
-        logger.info(f"✅ Metadata successfully updated for {file_path}")
+        logger.info(f"✅ Metadata & cover successfully applied to {file_path}")
         return True
     except Exception as e:
-        logger.error(f"❌ Error updating metadata for {file_path}: {e}", exc_info=True)
+        logger.error(f"❌ Error in edit_metadata for {file_path}: {e}", exc_info=True)
         return False
 
 # ----------------- مدیریت صف (Queue Worker) -----------------
 async def queue_worker(app: Application):
-    logger.info("⚙️ Queue worker thread started.")
+    logger.info("⚙️ Queue worker thread running.")
     while True:
         task = await task_queue.get()
         chat_id, status_msg_id, task_type, data = task
@@ -126,44 +127,46 @@ async def queue_worker(app: Application):
             elif task_type == 'soundcloud_url':
                 await process_soundcloud_url(app, chat_id, status_msg_id, data)
         except Exception as e:
-            logger.error(f"❌ Unhandled error in queue worker: {e}", exc_info=True)
+            logger.error(f"❌ Worker exception: {e}", exc_info=True)
             try:
-                await app.bot.edit_message_text("❌ متأسفانه در پردازش خطایی رخ داد.", chat_id=chat_id, message_id=status_msg_id)
+                await app.bot.edit_message_text("❌ خطا در پردازش فایل. لطفاً مجدداً تلاش کنید.", chat_id=chat_id, message_id=status_msg_id)
             except Exception:
                 pass
         finally:
             task_queue.task_done()
 
-# ----------------- پردازش فایل‌های صوتی تلگرام -----------------
-async def process_audio_file(app, chat_id, status_msg_id, document):
-    logger.info(f"📥 Processing Telegram File: {document.file_name}")
+# ----------------- پردازش فایل صوتی تلگرام (پشتیبانی از فوروارد) -----------------
+async def process_audio_file(app, chat_id, status_msg_id, doc_obj):
+    file_name = getattr(doc_obj, 'file_name', None) or "music.mp3"
+    logger.info(f"📥 Processing Telegram media/forwarded file: {file_name}")
     last_update_time = [0]
 
     async def progress_callback(current, total):
         now = time.time()
-        if now - last_update_time[0] > 2 or current == total:
+        if now - last_update_time[0] > 2.5 or current == total:
             last_update_time[0] = now
             percent = (current / total) * 100
             bar = make_progress_bar(percent)
-            msg = f"⏳ در حال دانلود از تلگرام...\n\n{bar}"
+            msg = f"⏳ در حال دانلود فایل از تلگرام...\n\n{bar}"
             try:
                 await app.bot.edit_message_text(msg, chat_id=chat_id, message_id=status_msg_id)
             except Exception:
                 pass
 
-    file = await app.bot.get_file(document.file_id)
-    original_name = document.file_name or "music.mp3"
-    name_without_ext, ext = os.path.splitext(original_name)
-    
-    # اسم جدید فایل همراه با آیدی کانال
+    file = await app.bot.get_file(doc_obj.file_id)
+    name_without_ext, ext = os.path.splitext(file_name)
+    if not ext:
+        ext = ".mp3"
+
+    # پاکسازی اسم فایل از آیدی‌های احتمالی
     clean_title = name_without_ext.replace(CHANNEL_ID, "").strip()
     final_title = f"{clean_title} {CHANNEL_ID}"
     new_filename = f"{final_title}{ext}"
     
     await file.download_to_drive(new_filename, progress_callback=progress_callback)
-    logger.info(f"💾 Downloaded file saved as: {new_filename}")
+    logger.info(f"💾 Saved downloaded media to: {new_filename}")
 
-    await app.bot.edit_message_text("🎨 در حال پاک‌سازی تگ‌های قدیمی و تنظیم کاور جدید...", chat_id=chat_id, message_id=status_msg_id)
+    await app.bot.edit_message_text("🎨 در حال پاکسازی تگ‌های قدیمی و تنظیم کاور جدید...", chat_id=chat_id, message_id=status_msg_id)
     await asyncio.to_thread(edit_metadata, new_filename, clean_title)
 
     await app.bot.edit_message_text("📤 در حال ارسال به کانال...", chat_id=chat_id, message_id=status_msg_id)
@@ -182,11 +185,11 @@ async def process_audio_file(app, chat_id, status_msg_id, document):
         os.remove(new_filename)
     
     logger.info(f"✅ Successfully processed and posted: {final_title}")
-    await app.bot.edit_message_text("✅ با موفقیت پردازش و در کانال منتشر شد!", chat_id=chat_id, message_id=status_msg_id)
+    await app.bot.edit_message_text("✅ فایل با موفقیت پردازش و در کانال منتشر شد!", chat_id=chat_id, message_id=status_msg_id)
 
 # ----------------- پردازش لینک SoundCloud -----------------
 async def process_soundcloud_url(app, chat_id, status_msg_id, url):
-    logger.info(f"🔗 Processing SoundCloud URL: {url}")
+    logger.info(f"🔗 Processing SoundCloud link: {url}")
     await app.bot.edit_message_text("🔎 در حال آنالیز لینک ساندکلود...", chat_id=chat_id, message_id=status_msg_id)
 
     loop = asyncio.get_running_loop()
@@ -223,20 +226,18 @@ async def process_soundcloud_url(app, chat_id, status_msg_id, url):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             tracks = []
-            if 'entries' in info:  # آلبوم یا پلی لیست
+            if 'entries' in info:
                 for entry in info['entries']:
                     if entry:
-                        title = entry.get('title', 'Track')
-                        tracks.append(title)
-            else:  # تک ترک
+                        tracks.append(entry.get('title', 'Track'))
+            else:
                 tracks.append(info.get('title', 'Track'))
             return tracks
 
     try:
         titles = await asyncio.to_thread(download_sc)
-        logger.info(f"🎶 Total tracks found: {len(titles)}")
     except Exception as e:
-        logger.error(f"❌ SoundCloud download error: {e}", exc_info=True)
+        logger.error(f"❌ SoundCloud error: {e}", exc_info=True)
         await app.bot.edit_message_text(f"❌ خطا در دانلود از ساندکلود: {e}", chat_id=chat_id, message_id=status_msg_id)
         return
 
@@ -245,24 +246,18 @@ async def process_soundcloud_url(app, chat_id, status_msg_id, url):
         clean_title = raw_title.replace(CHANNEL_ID, "").strip()
         final_title = f"{clean_title} {CHANNEL_ID}"
         
-        # پیدا کردن فایل دانلود شده
         expected_file = f"sc_downloads/{raw_title}.mp3"
-        
         if not os.path.exists(expected_file):
-            # جستجو در صورت تغییر نام فایل توسط yt-dlp
             for f in os.listdir("sc_downloads"):
                 if f.endswith(".mp3"):
                     expected_file = os.path.join("sc_downloads", f)
                     break
 
         if os.path.exists(expected_file):
-            status_text = f"🎨 ویرایش کاور و متادیتا ({idx}/{total_tracks}):\n{clean_title}"
-            await app.bot.edit_message_text(status_text, chat_id=chat_id, message_id=status_msg_id)
-            
+            await app.bot.edit_message_text(f"🎨 ویرایش متادیتا ({idx}/{total_tracks}):\n{clean_title}", chat_id=chat_id, message_id=status_msg_id)
             await asyncio.to_thread(edit_metadata, expected_file, clean_title)
 
-            status_text = f"📤 ارسال به کانال ({idx}/{total_tracks}):\n{clean_title}"
-            await app.bot.edit_message_text(status_text, chat_id=chat_id, message_id=status_msg_id)
+            await app.bot.edit_message_text(f"📤 ارسال به کانال ({idx}/{total_tracks}):\n{clean_title}", chat_id=chat_id, message_id=status_msg_id)
 
             caption = f"🎶 {final_title}\n\n🆔 {CHANNEL_ID}"
             with open(expected_file, 'rb') as audio_file:
@@ -274,21 +269,19 @@ async def process_soundcloud_url(app, chat_id, status_msg_id, url):
                     performer=CHANNEL_ID
                 )
             os.remove(expected_file)
-            logger.info(f"✅ Track {idx}/{total_tracks} posted to channel.")
 
-    await app.bot.edit_message_text("✅ تمام ترک‌های ساندکلود با موفقیت پردازش و منتشر شدند!", chat_id=chat_id, message_id=status_msg_id)
+    await app.bot.edit_message_text("✅ تمام ترک‌های ساندکلود با موفقیت منتشر شدند!", chat_id=chat_id, message_id=status_msg_id)
 
 # ----------------- هندلرهای پیام‌ها -----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
-        "سلام! به ربات پیشرفته مدیریت موزیک خوش آمدید 👋\n\n"
-        "✨ **امکانات ربات:**\n"
-        "1️⃣ حذف کاور و تگ کانال‌های دیگر و جایگذاری کاور اختصاصی شما\n"
-        "2️⃣ اضافه کردن `@voxxboxx` به اسم فایل، خواننده و متادیتا\n"
-        "3️⃣ دانلود تک‌تراک و آلبوم از ساندکلود با بالاترین کیفیت (320)\n"
-        "4️⃣ گزارش لحظه‌ای از درصد پیشرفت کار و لودینگ بار\n"
-        "5️⃣ پشتیبانی کامل از انواع فرمت‌های MP3, FLAC, M4A و...\n\n"
-        "📥 **راهنما:** کافیست فایل موزیک یا لینک ساندکلود را بفرستید."
+        "سلام! به ربات پست‌گذار کانال خوش آمدید 👋\n\n"
+        "✨ **امکانات:**\n"
+        "• حذف کاور و آیدی کانال‌های دیگر و جایگذاری کاور اختصاصی\n"
+        "• تنظیم آیدی `@voxxboxx` روی فایل و متادیتا\n"
+        "• پشتیبانی از لینک ساندکلود (تک‌ترک و آلبوم)\n"
+        "• نمایش درصد پیشرفت زنده\n\n"
+        "📥 کافیست فایل موزیک (یا فوروارد) و یا لینک ساندکلود را بفرستید."
     )
     if update.effective_message:
         await update.effective_message.reply_text(welcome_text)
@@ -298,17 +291,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg:
         return
 
-    # چک کردن فایل صوتی یا اسناد
-    if msg.audio or msg.document:
-        doc = msg.audio or msg.document
+    # چک کردن فایل صوتی یا اسناد (اعم از مستقیم یا فوروارد شده)
+    doc_obj = msg.audio or msg.document or msg.voice
+    
+    if doc_obj:
         status_msg = await msg.reply_text("📥 فایل دریافت شد! در صف پردازش قرار گرفت...")
-        logger.info(f"➕ Added audio task to queue for Chat: {msg.chat_id}")
-        await task_queue.put((msg.chat_id, status_msg.message_id, 'audio_file', doc))
+        logger.info(f"➕ Audio task queued from chat: {msg.chat_id}")
+        await task_queue.put((msg.chat_id, status_msg.message_id, 'audio_file', doc_obj))
 
-    # چک کردن لینک ساندکلود
     elif msg.text and ("soundcloud.com" in msg.text):
         status_msg = await msg.reply_text("🔗 لینک ساندکلود دریافت شد! در صف قرار گرفت...")
-        logger.info(f"➕ Added SoundCloud task to queue for Chat: {msg.chat_id}")
+        logger.info(f"➕ SoundCloud task queued from chat: {msg.chat_id}")
         await task_queue.put((msg.chat_id, status_msg.message_id, 'soundcloud_url', msg.text))
 
 # ----------------- اجرای اصلی -----------------
@@ -320,11 +313,11 @@ async def main():
 
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.AUDIO | filters.Document.ALL | filters.TEXT, handle_message))
+    app.add_handler(MessageHandler(filters.AUDIO | filters.Document.ALL | filters.VOICE | filters.TEXT, handle_message))
 
     asyncio.create_task(queue_worker(app))
 
-    logger.info("🤖 Bot starting polling...")
+    logger.info("🤖 Bot polling started...")
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
