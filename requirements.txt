@@ -3,3 +3,5 @@ yt-dlp
 mutagen
 Pillow
 nest_asyncio
+aiohttp
+static-ffmpeg
