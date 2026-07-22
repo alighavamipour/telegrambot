@@ -21,7 +21,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ۱. خاموش کردن لاگ‌های اضافی شبکه جهت خلوت ماندن کنسول
+# خاموش کردن لاگ‌های اضافی شبکه جهت خلوت ماندن کنسول
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.INFO)
@@ -259,7 +259,7 @@ async def process_audio_file(app, chat_id, status_msg_id, doc_obj, worker_id: in
             os.remove(new_filename)
             logger.info(f"🧹 فایل موقت پاک شد: {new_filename}")
 
-# ----------------- پردازش بهینه‌شده لینک SoundCloud -----------------
+# ----------------- پردازش بدون گیر و بهینه‌شده ساندکلود -----------------
 async def process_soundcloud_url(app, chat_id, status_msg_id, url, worker_id: int):
     unique_dir = f"sc_downloads_{uuid.uuid4().hex[:8]}"
     os.makedirs(unique_dir, exist_ok=True)
@@ -284,33 +284,22 @@ async def process_soundcloud_url(app, chat_id, status_msg_id, url, worker_id: in
                     loop
                 )
 
-    # کانفیگ فوق‌بهینه‌شده yt_dlp
+    # تنظیمات کاملاً سریع بدون انکود سنگین
     ydl_opts = {
         'format': 'bestaudio/best',
         'outtmpl': f'{unique_dir}/%(title)s.%(ext)s',
-        
-        # ۲. دانلود هم‌زمان ۵ فرگمنت برای رفع کندی درصدهای پایانی
         'concurrent_fragment_downloads': 5,
-        
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '320',
-        }],
         'progress_hooks': [ytdl_hook],
         'quiet': True,
         'no_warnings': True,
         'socket_timeout': 15,
         'source_address': '0.0.0.0',
         'hls_prefer_native': True,
+        'hls_use_mpegts': True,  # جلوگیری از مکث انتهایی فایل‌های HLS ساندکلود
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept-Language': 'en-US,en;q=0.9',
         },
-        'postprocessor_args': [
-            '-threads', '2',              # محدود کردن نخ‌های FFmpeg جهت جلوگیری از ۱۰۰٪ شدن CPU
-            '-timeout', '15000000'        # تایم‌اوت ۱۵ ثانیه‌ای FFmpeg
-        ],
     }
 
     def download_sc():
@@ -326,49 +315,47 @@ async def process_soundcloud_url(app, chat_id, status_msg_id, url, worker_id: in
             return tracks
 
     try:
-        # مدیریت دانلود با کنترل RAM و تایم‌اوت کلی ۲.۵ دقیقه
+        # افزایش تایم‌اوت به ۴ دقیقه جهت اطمینان
         async with download_semaphore:
             tracks_info = await asyncio.wait_for(
                 asyncio.to_thread(download_sc),
-                timeout=150.0
+                timeout=240.0
             )
     except asyncio.TimeoutError:
         if os.path.exists(unique_dir):
             shutil.rmtree(unique_dir)
-        raise Exception("⏱ زمان دانلود از ساندکلود به پایان رسید (Timeout). احتمالاً سرور درگیر است.")
+        raise Exception("⏱ زمان دانلود از ساندکلود به پایان رسید (Timeout).")
     except Exception as e:
         if os.path.exists(unique_dir):
             shutil.rmtree(unique_dir)
         err_msg = str(e)
         if "DRM protected" in err_msg:
-            raise Exception("🔒 این ترک دارای قفل کپی‌رایت دیجیتال (DRM) است و اجازه دانلود مستقیم ندارد.")
+            raise Exception("🔒 این ترک دارای قفل کپی‌رایت دیجیتال (DRM) است.")
         raise Exception(f"خطا در دریافت از ساندکلود: {err_msg}")
 
     total_tracks = len(tracks_info)
     channel_username = CHANNEL_ID.replace("@", "")
 
     try:
+        # یافتن فایل‌های دانلود شده بر اساس پسوندهای رایج
+        downloaded_files = [os.path.join(unique_dir, f) for f in os.listdir(unique_dir) if f.endswith(('.mp3', '.m4a', '.mp4', '.opus', '.ogg'))]
+
         for idx, track in enumerate(tracks_info, start=1):
             raw_title = track.get('title', 'Track')
             duration = track.get('duration', 0)
             clean_title = raw_title.replace(CHANNEL_ID, "").strip()
             final_title = f"{clean_title} {CHANNEL_ID}"
             
-            expected_file = f"{unique_dir}/{raw_title}.mp3"
-            if not os.path.exists(expected_file):
-                for f in os.listdir(unique_dir):
-                    if f.endswith(".mp3"):
-                        expected_file = os.path.join(unique_dir, f)
-                        break
+            target_file = downloaded_files[idx - 1] if idx <= len(downloaded_files) else None
 
-            if os.path.exists(expected_file):
-                file_size = os.path.getsize(expected_file)
+            if target_file and os.path.exists(target_file):
+                file_size = os.path.getsize(target_file)
                 
                 await app.bot.edit_message_text(
                     f"🎨 **در حال تنظیم متادیتا و کاور ({idx}/{total_tracks}):**\n`{clean_title}`",
                     chat_id=chat_id, message_id=status_msg_id, parse_mode="Markdown"
                 )
-                await asyncio.to_thread(edit_metadata, expected_file, clean_title)
+                await asyncio.to_thread(edit_metadata, target_file, clean_title)
 
                 await app.bot.edit_message_text(
                     f"📤 **در حال انتشار در کانال ({idx}/{total_tracks}):**\n`{clean_title}`",
@@ -385,7 +372,7 @@ async def process_soundcloud_url(app, chat_id, status_msg_id, url, worker_id: in
                 sent_msg = None
                 async def upload_sc_task():
                     nonlocal sent_msg
-                    with open(expected_file, 'rb') as audio_file:
+                    with open(target_file, 'rb') as audio_file:
                         sent_msg = await app.bot.send_audio(
                             chat_id=CHANNEL_ID,
                             audio=audio_file,
@@ -412,7 +399,7 @@ async def process_soundcloud_url(app, chat_id, status_msg_id, url, worker_id: in
                     parse_mode="Markdown"
                 )
 
-                os.remove(expected_file)
+                os.remove(target_file)
 
         await app.bot.edit_message_text("🎉 **تمامی ترک‌های ساندکلود با موفقیت منتشر شدند!**", chat_id=chat_id, message_id=status_msg_id, parse_mode="Markdown")
 
