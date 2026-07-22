@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 static_ffmpeg.add_paths()
 
 # ----------------- تنظیمات ربات -----------------
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # توکن ربات خود را اینجا بگذارید
+BOT_TOKEN = "8527003524:AAFBSHWc3eJ_D6xJEe4IKM9CKCqK_S7bMAc"  # توکن ربات خود را اینجا بگذارید
 CHANNEL_ID = "@voxxboxx"            # آیدی کانال شما
 COVER_PATH = "cover.jpg"            # تصویر کاور در کنار فایل bot.py
 
