@@ -12,20 +12,24 @@ from mutagen.id3 import ID3, APIC, TPE1, TIT2, TALB, COMM, ID3NoHeaderError
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
 
-# ----------------- تنظیمات لاگینگ دقیق -----------------
+# ----------------- تنظیمات لاگینگ پیشرفته (Trace کامل) -----------------
 logging.basicConfig(
-    format='%(asctime)s - [%(levelname)s] - %(message)s',
-    level=logging.INFO
+    format='%(asctime)s - [%(levelname)s] - [%(name)s:%(lineno)d] - %(message)s',
+    level=logging.DEBUG
 )
 logger = logging.getLogger(__name__)
 
-# راه اندازی FFmpeg
+# کاهش لاگ‌های تکراری و شلوغ httpx و telegram
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.INFO)
+
+# راه‌اندازی FFmpeg
 static_ffmpeg.add_paths()
 
-# ----------------- دریافت توکن از Environment Variables -----------------
+# ----------------- تنظیمات متغیرهای محیطی و ثابت‌ها -----------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL_ID = "@voxxboxx"            # آیدی کانال شما
-COVER_PATH = "cover.jpg"            # تصویر کاور
+COVER_PATH = "cover.jpg"            # نام فایل تصویر کاور در ریشه پروژه
 
 if not BOT_TOKEN:
     logger.critical("❌ BOT_TOKEN در متغیرهای محیطی (Environment Variables) تعریف نشده است!")
@@ -56,38 +60,54 @@ def make_progress_bar(percent: float, length: int = 10) -> str:
 # ----------------- پاکسازی کامل و ویرایش متادیتا -----------------
 def edit_metadata(file_path: str, title: str):
     ext = os.path.splitext(file_path)[1].lower()
-    logger.info(f"🎨 Starting metadata rewrite for: {file_path}")
-    
-    if not os.path.exists(COVER_PATH):
-        logger.error(f"❌ Cover file not found at {COVER_PATH}!")
+    cover_absolute_path = os.path.abspath(COVER_PATH)
+    logger.debug(f"🎨 Starting metadata edit for file: {file_path}")
+    logger.debug(f"🖼️ Checking cover image path: {cover_absolute_path}")
+
+    if not os.path.exists(cover_absolute_path):
+        logger.error(f"❌ Cover file NOT found at path: {cover_absolute_path}! Check repository root.")
         return False
 
-    with open(COVER_PATH, 'rb') as f:
-        cover_data = f.read()
-
     try:
+        with open(cover_absolute_path, 'rb') as f:
+            cover_data = f.read()
+        logger.debug(f"📸 Cover file loaded successfully ({len(cover_data)} bytes).")
+
         if ext == '.mp3':
             try:
                 audio = MP3(file_path, ID3=ID3)
             except ID3NoHeaderError:
+                logger.debug("No ID3 header found, creating new one...")
                 audio = MP3(file_path)
                 audio.add_tags()
-            
-            # حذف تمام تگ‌های قبلی کانال‌های دیگر
-            audio.tags.delete(file_path)
+
+            # حذف تمام تگ‌های قبلی
+            if audio.tags:
+                audio.tags.delete(file_path)
             audio.add_tags()
 
-            # جایگذاری تگ‌های اختصاصی کانال شما
-            audio.tags.add(APIC(encoding=3, mime='image/jpeg', type=3, desc='Cover', data=cover_data))
+            # افزودن کاور و تگ‌های اختصاصی
+            audio.tags.add(
+                APIC(
+                    encoding=3,      # UTF-8
+                    mime='image/jpeg',
+                    type=3,          # Front Cover
+                    desc='Cover',
+                    data=cover_data
+                )
+            )
             audio.tags.add(TIT2(encoding=3, text=f"{title} {CHANNEL_ID}"))
             audio.tags.add(TPE1(encoding=3, text=CHANNEL_ID))
             audio.tags.add(TALB(encoding=3, text=CHANNEL_ID))
             audio.tags.add(COMM(encoding=3, lang='eng', desc='Comment', text=CHANNEL_ID))
-            audio.save()
+            
+            # ذخیره با استاندارد ID3v2.3 جهت نمایش درست در تلگرام و تمام پلیرها
+            audio.save(v2_version=3)
+            logger.info(f"✅ ID3v2.3 tags and cover successfully saved to: {file_path}")
 
         elif ext == '.flac':
             audio = FLAC(file_path)
-            audio.clear()  # حذف کامل تگ‌های قبلی
+            audio.clear()
             image = Picture()
             image.type = 3
             image.mime = 'image/jpeg'
@@ -101,7 +121,7 @@ def edit_metadata(file_path: str, title: str):
 
         elif ext in ['.m4a', '.mp4']:
             audio = MP4(file_path)
-            audio.delete()  # حذف کامل تگ‌های قبلی
+            audio.delete()
             audio['covr'] = [MP4Cover(cover_data, imageformat=MP4Cover.FORMAT_JPEG)]
             audio['\xa9nam'] = f"{title} {CHANNEL_ID}"
             audio['\xa9ART'] = CHANNEL_ID
@@ -109,10 +129,9 @@ def edit_metadata(file_path: str, title: str):
             audio['\xa9cmt'] = CHANNEL_ID
             audio.save()
 
-        logger.info(f"✅ Metadata & cover successfully applied to {file_path}")
         return True
     except Exception as e:
-        logger.error(f"❌ Error in edit_metadata for {file_path}: {e}", exc_info=True)
+        logger.error(f"❌ Critical exception in edit_metadata: {e}", exc_info=True)
         return False
 
 # ----------------- مدیریت صف (Queue Worker) -----------------
@@ -121,13 +140,14 @@ async def queue_worker(app: Application):
     while True:
         task = await task_queue.get()
         chat_id, status_msg_id, task_type, data = task
+        logger.debug(f"🔄 Processing queue item | Type: {task_type} | Chat: {chat_id}")
         try:
             if task_type == 'audio_file':
                 await process_audio_file(app, chat_id, status_msg_id, data)
             elif task_type == 'soundcloud_url':
                 await process_soundcloud_url(app, chat_id, status_msg_id, data)
         except Exception as e:
-            logger.error(f"❌ Worker exception: {e}", exc_info=True)
+            logger.error(f"❌ Worker exception for task {task_type}: {e}", exc_info=True)
             try:
                 await app.bot.edit_message_text("❌ خطا در پردازش فایل. لطفاً مجدداً تلاش کنید.", chat_id=chat_id, message_id=status_msg_id)
             except Exception:
@@ -150,10 +170,9 @@ async def process_audio_file(app, chat_id, status_msg_id, doc_obj):
     final_title = f"{clean_title} {CHANNEL_ID}"
     new_filename = f"{final_title}{ext}"
 
-    # تغییر وضعیت به در حال دانلود
     await app.bot.edit_message_text("⏳ در حال دانلود فایل از تلگرام...", chat_id=chat_id, message_id=status_msg_id)
     
-    # دانلود فایل با متد درست در نسخه 20+ python-telegram-bot
+    # دانلود فایل (سازگار با نسخه python-telegram-bot v20+)
     await file.download_to_drive(custom_path=new_filename)
     logger.info(f"💾 Saved downloaded media to: {new_filename}")
 
@@ -177,6 +196,7 @@ async def process_audio_file(app, chat_id, status_msg_id, doc_obj):
     
     logger.info(f"✅ Successfully processed and posted: {final_title}")
     await app.bot.edit_message_text("✅ فایل با موفقیت پردازش و در کانال منتشر شد!", chat_id=chat_id, message_id=status_msg_id)
+
 # ----------------- پردازش لینک SoundCloud -----------------
 async def process_soundcloud_url(app, chat_id, status_msg_id, url):
     logger.info(f"🔗 Processing SoundCloud link: {url}")
@@ -270,7 +290,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• حذف کاور و آیدی کانال‌های دیگر و جایگذاری کاور اختصاصی\n"
         "• تنظیم آیدی `@voxxboxx` روی فایل و متادیتا\n"
         "• پشتیبانی از لینک ساندکلود (تک‌ترک و آلبوم)\n"
-        "• نمایش درصد پیشرفت زنده\n\n"
+        "• پشتیبانی کامل از فایل‌های مستقیم و فورواردی\n\n"
         "📥 کافیست فایل موزیک (یا فوروارد) و یا لینک ساندکلود را بفرستید."
     )
     if update.effective_message:
@@ -281,18 +301,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg:
         return
 
-    # چک کردن فایل صوتی یا اسناد (اعم از مستقیم یا فوروارد شده)
+    user = update.effective_user
+    user_info = f"{user.id} (@{user.username})" if user else "Unknown User"
+    logger.debug(f"📩 Incoming message | User: {user_info} | Chat ID: {msg.chat_id}")
+
     doc_obj = msg.audio or msg.document or msg.voice
-    
+
     if doc_obj:
+        file_name = getattr(doc_obj, 'file_name', 'Voice/Media')
+        mime_type = getattr(doc_obj, 'mime_type', 'Unknown')
+        logger.info(f"🎵 Audio/Document received | Name: {file_name} | MIME: {mime_type} | Size: {doc_obj.file_size} bytes")
+
         status_msg = await msg.reply_text("📥 فایل دریافت شد! در صف پردازش قرار گرفت...")
-        logger.info(f"➕ Audio task queued from chat: {msg.chat_id}")
         await task_queue.put((msg.chat_id, status_msg.message_id, 'audio_file', doc_obj))
 
     elif msg.text and ("soundcloud.com" in msg.text):
+        logger.info(f"🔗 SoundCloud URL received: {msg.text}")
         status_msg = await msg.reply_text("🔗 لینک ساندکلود دریافت شد! در صف قرار گرفت...")
-        logger.info(f"➕ SoundCloud task queued from chat: {msg.chat_id}")
         await task_queue.put((msg.chat_id, status_msg.message_id, 'soundcloud_url', msg.text))
+    else:
+        logger.debug(f"ℹ️ Received non-audio message text: {msg.text}")
 
 # ----------------- اجرای اصلی -----------------
 async def main():
