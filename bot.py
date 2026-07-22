@@ -21,7 +21,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ۱. خاموش کردن لاگ‌های اضافی شبکه جهت خلوت ماندن کنسول
 logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.INFO)
 
 static_ffmpeg.add_paths()
@@ -286,18 +288,21 @@ async def process_soundcloud_url(app, chat_id, status_msg_id, url, worker_id: in
     ydl_opts = {
         'format': 'bestaudio/best',
         'outtmpl': f'{unique_dir}/%(title)s.%(ext)s',
+        
+        # ۲. دانلود هم‌زمان ۵ فرگمنت برای رفع کندی درصدهای پایانی
+        'concurrent_fragment_downloads': 5,
+        
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
             'preferredquality': '320',
         }],
         'progress_hooks': [ytdl_hook],
-        'quiet': False,
+        'quiet': True,
         'no_warnings': True,
         'socket_timeout': 15,
         'source_address': '0.0.0.0',
         'hls_prefer_native': True,
-        'concurrent_fragment_downloads': 5,
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept-Language': 'en-US,en;q=0.9',
