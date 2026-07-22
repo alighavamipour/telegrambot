@@ -139,19 +139,6 @@ async def queue_worker(app: Application):
 async def process_audio_file(app, chat_id, status_msg_id, doc_obj):
     file_name = getattr(doc_obj, 'file_name', None) or "music.mp3"
     logger.info(f"📥 Processing Telegram media/forwarded file: {file_name}")
-    last_update_time = [0]
-
-    async def progress_callback(current, total):
-        now = time.time()
-        if now - last_update_time[0] > 2.5 or current == total:
-            last_update_time[0] = now
-            percent = (current / total) * 100
-            bar = make_progress_bar(percent)
-            msg = f"⏳ در حال دانلود فایل از تلگرام...\n\n{bar}"
-            try:
-                await app.bot.edit_message_text(msg, chat_id=chat_id, message_id=status_msg_id)
-            except Exception:
-                pass
 
     file = await app.bot.get_file(doc_obj.file_id)
     name_without_ext, ext = os.path.splitext(file_name)
@@ -162,8 +149,12 @@ async def process_audio_file(app, chat_id, status_msg_id, doc_obj):
     clean_title = name_without_ext.replace(CHANNEL_ID, "").strip()
     final_title = f"{clean_title} {CHANNEL_ID}"
     new_filename = f"{final_title}{ext}"
+
+    # تغییر وضعیت به در حال دانلود
+    await app.bot.edit_message_text("⏳ در حال دانلود فایل از تلگرام...", chat_id=chat_id, message_id=status_msg_id)
     
-    await file.download_to_drive(new_filename, progress_callback=progress_callback)
+    # دانلود فایل با متد درست در نسخه 20+ python-telegram-bot
+    await file.download_to_drive(custom_path=new_filename)
     logger.info(f"💾 Saved downloaded media to: {new_filename}")
 
     await app.bot.edit_message_text("🎨 در حال پاکسازی تگ‌های قدیمی و تنظیم کاور جدید...", chat_id=chat_id, message_id=status_msg_id)
@@ -186,7 +177,6 @@ async def process_audio_file(app, chat_id, status_msg_id, doc_obj):
     
     logger.info(f"✅ Successfully processed and posted: {final_title}")
     await app.bot.edit_message_text("✅ فایل با موفقیت پردازش و در کانال منتشر شد!", chat_id=chat_id, message_id=status_msg_id)
-
 # ----------------- پردازش لینک SoundCloud -----------------
 async def process_soundcloud_url(app, chat_id, status_msg_id, url):
     logger.info(f"🔗 Processing SoundCloud link: {url}")
