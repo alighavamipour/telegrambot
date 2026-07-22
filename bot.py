@@ -36,6 +36,7 @@ if not BOT_TOKEN:
     logger.critical("❌ BOT_TOKEN در متغیرهای محیطی یافت نشد!")
 
 task_queue = asyncio.Queue()
+download_semaphore = asyncio.Semaphore(2)  # حداکثر ۲ دانلود سنگین همزمان جهت حفظ حافظه RAM
 
 # ----------------- وب‌سرور جهت بیدار نگه داشتن ربات -----------------
 async def handle_ping(request):
@@ -69,6 +70,19 @@ def format_duration(seconds: int) -> str:
         return "نامشخص"
     mins, secs = divmod(int(seconds), 60)
     return f"{mins:02d}:{secs:02d}"
+
+def clean_old_temp_files():
+    """پاکسازی فایل‌های باقی‌مانده از اجراهای قبلی"""
+    for item in os.listdir('.'):
+        if item.startswith("sc_downloads_") or item.startswith("temp_"):
+            try:
+                if os.path.isdir(item):
+                    shutil.rmtree(item)
+                else:
+                    os.remove(item)
+                logger.info(f"🧹 فایل/پوشه قدیمی پاک شد: {item}")
+            except Exception as e:
+                logger.warning(f"⚠️ خطا در پاکسازی اولیه: {e}")
 
 # ----------------- ویرایش متادیتا -----------------
 def edit_metadata(file_path: str, title: str):
@@ -152,7 +166,7 @@ async def queue_worker(worker_id: int, app: Application):
                 await process_soundcloud_url(app, chat_id, status_msg_id, data, worker_id)
         except Exception as e:
             error_details = str(e)
-            logger.error(f"❌ Worker-{worker_id} - خطای نهایی در پردازش {task_type}: {error_details}", exc_info=True)
+            logger.error(f"❌ Worker-{worker_id} - خطای نهایی: {error_details}", exc_info=True)
             err_text = (
                 "❌ **خطا در پردازش فایل!**\n\n"
                 f"🔻 **جزئیات خطا:**\n`{error_details[:300]}`\n\n"
@@ -178,7 +192,6 @@ async def process_audio_file(app, chat_id, status_msg_id, doc_obj, worker_id: in
     clean_title = name_without_ext.replace(CHANNEL_ID, "").strip()
     final_title = f"{clean_title} {CHANNEL_ID}"
     
-    # ساخت نام یکتا برای فایل در سرور جهت جلوگیری از تداخل فایلی در پردازش‌های همزمان
     unique_id = uuid.uuid4().hex[:8]
     new_filename = f"temp_{unique_id}_{final_title}{ext}"
 
@@ -242,11 +255,10 @@ async def process_audio_file(app, chat_id, status_msg_id, doc_obj, worker_id: in
     finally:
         if os.path.exists(new_filename):
             os.remove(new_filename)
-            logger.info(f"🧹 فایل موقت سرور پاک شد: {new_filename}")
+            logger.info(f"🧹 فایل موقت پاک شد: {new_filename}")
 
-# ----------------- پردازش لینک SoundCloud -----------------
+# ----------------- پردازش بهینه‌شده لینک SoundCloud -----------------
 async def process_soundcloud_url(app, chat_id, status_msg_id, url, worker_id: int):
-    # ایجاد فولدر اختصاصی یکتا برای جلوگیری از تداخل دانلودهای همزمان ساندکلود
     unique_dir = f"sc_downloads_{uuid.uuid4().hex[:8]}"
     os.makedirs(unique_dir, exist_ok=True)
 
@@ -258,7 +270,7 @@ async def process_soundcloud_url(app, chat_id, status_msg_id, url, worker_id: in
     def ytdl_hook(d):
         if d['status'] == 'downloading':
             now = time.time()
-            if now - last_update_time[0] > 2.5:
+            if now - last_update_time[0] > 2.0:
                 last_update_time[0] = now
                 total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
                 downloaded = d.get('downloaded_bytes', 0)
@@ -270,6 +282,7 @@ async def process_soundcloud_url(app, chat_id, status_msg_id, url, worker_id: in
                     loop
                 )
 
+    # کانفیگ فوق‌بهینه‌شده yt_dlp
     ydl_opts = {
         'format': 'bestaudio/best',
         'outtmpl': f'{unique_dir}/%(title)s.%(ext)s',
@@ -279,7 +292,20 @@ async def process_soundcloud_url(app, chat_id, status_msg_id, url, worker_id: in
             'preferredquality': '320',
         }],
         'progress_hooks': [ytdl_hook],
-        'quiet': True,
+        'quiet': False,
+        'no_warnings': True,
+        'socket_timeout': 15,
+        'source_address': '0.0.0.0',
+        'hls_prefer_native': True,
+        'concurrent_fragment_downloads': 5,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+        },
+        'postprocessor_args': [
+            '-threads', '2',              # محدود کردن نخ‌های FFmpeg جهت جلوگیری از ۱۰۰٪ شدن CPU
+            '-timeout', '15000000'        # تایم‌اوت ۱۵ ثانیه‌ای FFmpeg
+        ],
     }
 
     def download_sc():
@@ -295,11 +321,23 @@ async def process_soundcloud_url(app, chat_id, status_msg_id, url, worker_id: in
             return tracks
 
     try:
-        tracks_info = await asyncio.to_thread(download_sc)
+        # مدیریت دانلود با کنترل RAM و تایم‌اوت کلی ۲.۵ دقیقه
+        async with download_semaphore:
+            tracks_info = await asyncio.wait_for(
+                asyncio.to_thread(download_sc),
+                timeout=150.0
+            )
+    except asyncio.TimeoutError:
+        if os.path.exists(unique_dir):
+            shutil.rmtree(unique_dir)
+        raise Exception("⏱ زمان دانلود از ساندکلود به پایان رسید (Timeout). احتمالاً سرور درگیر است.")
     except Exception as e:
         if os.path.exists(unique_dir):
             shutil.rmtree(unique_dir)
-        raise Exception(f"خطا در دریافت از ساندکلود: {str(e)}")
+        err_msg = str(e)
+        if "DRM protected" in err_msg:
+            raise Exception("🔒 این ترک دارای قفل کپی‌رایت دیجیتال (DRM) است و اجازه دانلود مستقیم ندارد.")
+        raise Exception(f"خطا در دریافت از ساندکلود: {err_msg}")
 
     total_tracks = len(tracks_info)
     channel_username = CHANNEL_ID.replace("@", "")
@@ -400,7 +438,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• حذف متادیتای قبلی و اعمال کاور اختصاصی کانال\n"
         "• تنظیم آیدی `@voxxboxx` روی نام اثر و متادیتا\n"
         "• پردازش همزمان چند فایل و لینک (موازی)\n"
-        "• استخراج موزیک از ساندکلود (تک‌ترک و آلبوم)\n"
+        "• استخراج موزیک از ساندکلود با الگوریتم بهینه‌شده\n"
         "• نمایش زمان، حجم و ساخت دکمه مدیریت پست\n\n"
         "📥 *کافیست فایل‌های موزیک یا لینک‌های ساندکلود را ارسال کنید.*"
     )
@@ -412,7 +450,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg:
         return
 
-    # شناسایی انواع فایل صوتی
     doc_obj = msg.audio or msg.voice
     if not doc_obj and msg.document:
         if msg.document.mime_type and msg.document.mime_type.startswith("audio/"):
@@ -434,6 +471,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ----------------- اجرای اصلی -----------------
 async def main():
+    clean_old_temp_files()
     await start_web_server()
 
     app = Application.builder().token(BOT_TOKEN).build()
@@ -441,7 +479,6 @@ async def main():
     app.add_handler(CallbackQueryHandler(handle_callback_query))
     app.add_handler(MessageHandler(filters.AUDIO | filters.Document.ALL | filters.VOICE | filters.TEXT, handle_message))
 
-    # ایجاد چندین ورکر همزمان
     for i in range(1, NUM_WORKERS + 1):
         asyncio.create_task(queue_worker(i, app))
 
